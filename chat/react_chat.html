@@ -338,7 +338,7 @@
        * 3. Handling Server-Sent Events (SSE) for real-time streaming
        *
        * Usage:
-       * - Set CODEER_API_KEY and CODEER_API_ROOT
+       * - Set CODEER_API_KEY, CODEER_API_ROOT, and CODEER_DEFAULT_AGENT
        * - Chat session is created automatically on first message
        * - Messages stream in real-time via SSE
        */
@@ -348,6 +348,7 @@
       // ============================================
       const CODEER_API_KEY = "your_workspace_api_key";
       const CODEER_API_ROOT = "http://localhost:8000";
+      const CODEER_DEFAULT_AGENT = undefined; // Optional: Set agent UUID or leave undefined for default agent
 
       // ============================================
       // API Functions
@@ -562,7 +563,7 @@
         const messagesContainerRef = useRef(null);
         const textareaRef = useRef(null);
         const historyIdRef = useRef(null);
-        const agentId = useRef(undefined);
+        const agentId = useRef(CODEER_DEFAULT_AGENT);
 
         const scrollToBottom = () => {
           if (messagesContainerRef.current) {

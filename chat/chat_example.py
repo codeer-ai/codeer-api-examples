@@ -9,7 +9,7 @@ This example demonstrates:
 3. Handling Server-Sent Events (SSE) for real-time streaming
 
 Usage:
-- Set CODEER_API_KEY and CODEER_API_ROOT
+- Set CODEER_API_KEY, CODEER_API_ROOT, and CODEER_DEFAULT_AGENT
 - Run: python chat_example.py
 - Type messages and see streaming responses
 - Commands: /new (new chat), /quit (exit)
@@ -41,6 +41,7 @@ if hasattr(sys.stderr, 'buffer'):
 # ============================================
 CODEER_API_KEY = "your_workspace_api_key"
 CODEER_API_ROOT = "http://localhost:8000"
+CODEER_DEFAULT_AGENT = None  # Optional: Set agent UUID or None for default agent
 
 # ============================================
 # API Functions
@@ -104,7 +105,6 @@ def send_question(
                 "x-api-key": CODEER_API_KEY,
             },
             json=payload,
-            stream=True
         )
         response.encoding = 'utf-8'
         
@@ -216,7 +216,7 @@ def send_question(
 class ChatCLI:
     def __init__(self):
         self.history_id = None
-        self.agent_id = None
+        self.agent_id = CODEER_DEFAULT_AGENT
         self.is_typing = False
     
     def print_welcome(self):

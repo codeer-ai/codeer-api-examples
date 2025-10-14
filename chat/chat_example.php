@@ -9,7 +9,7 @@
  * 3. Handling Server-Sent Events (SSE) for real-time streaming
  *
  * Usage:
- * - Set CODEER_API_KEY and CODEER_API_ROOT
+ * - Set CODEER_API_KEY, CODEER_API_ROOT, and CODEER_DEFAULT_AGENT
  * - Run: php chat_example.php
  * - Type messages and see streaming responses
  * - Commands: /new (new chat), /quit (exit)
@@ -24,6 +24,7 @@ mb_http_output('UTF-8');
 // ============================================
 define('CODEER_API_KEY', 'your_workspace_api_key');
 define('CODEER_API_ROOT', 'http://localhost:8000');
+define('CODEER_DEFAULT_AGENT', null); // Optional: Set agent UUID or null for default agent
 
 // ============================================
 // API Functions
@@ -216,7 +217,7 @@ function sendQuestion($historyId, $payload, $onMessage = null, $onDone = null, $
 
 class ChatCLI {
     private $historyId = null;
-    private $agentId = null;
+    private $agentId = CODEER_DEFAULT_AGENT;
     private $isTyping = false;
     
     /**
