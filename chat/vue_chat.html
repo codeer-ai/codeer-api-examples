@@ -197,6 +197,117 @@
         border-color: #19c37d;
       }
 
+      .upload-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 10px;
+        gap: 10px;
+      }
+
+      .upload-btn {
+        padding: 8px 12px;
+        background: #40414f;
+        border: 1px dashed #565869;
+        border-radius: 8px;
+        color: #ececf1;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        transition: all 0.2s;
+        flex-shrink: 0;
+      }
+
+      .upload-btn:hover:not(:disabled) {
+        background: #4d4d4f;
+        border-color: #19c37d;
+      }
+
+      .upload-btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+
+      .upload-status {
+        color: #8e8ea0;
+        font-size: 14px;
+      }
+
+      .upload-error {
+        color: #ff6b6b;
+        font-size: 14px;
+      }
+
+      .attachment-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+
+      .attachment-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        border-radius: 20px;
+        background: #202123;
+        border: 1px solid #565869;
+        color: #ececf1;
+        font-size: 13px;
+      }
+
+      .attachment-name {
+        max-width: 200px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .attachment-remove {
+        background: transparent;
+        border: none;
+        color: #8e8ea0;
+        cursor: pointer;
+        font-size: 14px;
+        padding: 0 4px;
+      }
+
+      .attachment-remove:hover {
+        color: #ff6b6b;
+      }
+
+      .message-attachments {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      .message-attachment {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        border-radius: 10px;
+        border: 1px solid #565869;
+        background: #2a2b32;
+        color: #ececf1;
+        font-size: 13px;
+      }
+
+      .message-attachment-icon {
+        font-size: 14px;
+      }
+
+      .message-attachment-name {
+        max-width: 220px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
       textarea {
         flex: 1;
         background: transparent;
@@ -368,12 +479,65 @@
                 class="streaming-cursor"
               ></span>
             </div>
+            <div
+              v-if="message.attachments && message.attachments.length > 0"
+              class="message-attachments"
+            >
+              <div
+                v-for="file in message.attachments"
+                :key="file.uuid"
+                class="message-attachment"
+              >
+                <span class="message-attachment-icon">📎</span>
+                <span class="message-attachment-name" :title="file.name">{{
+                  file.name
+                }}</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
 
       <div class="input-area">
         <div class="input-wrapper">
+          <input
+            type="file"
+            ref="fileInput"
+            style="display: none"
+            @change="handleFileChange"
+          />
+          <div class="upload-row">
+            <button
+              class="upload-btn"
+              @click="handleUploadClick"
+              :disabled="isUploading"
+            >
+              <span>📎</span>
+              <span>{{ isUploading ? "Uploading..." : "Attach file" }}</span>
+            </button>
+            <div class="upload-status">
+              <span v-if="isUploading">Uploading to server...</span>
+              <span v-else-if="attachments.length > 0">
+                {{ attachments.length }} file{{ attachments.length > 1 ? "s" : "" }}
+                attached
+              </span>
+              <span v-else>Optional: upload files to share with the chat</span>
+            </div>
+          </div>
+          <div v-if="uploadError" class="upload-error">{{ uploadError }}</div>
+          <div v-if="attachments.length > 0" class="attachment-list">
+            <div v-for="file in attachments" :key="file.uuid" class="attachment-pill">
+              <span class="attachment-name" :title="file.name">{{ file.name }}</span>
+              <span class="upload-status">attached</span>
+              <button
+                class="attachment-remove"
+                @click="removeAttachment(file.uuid)"
+                title="Remove attachment"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
           <div class="input-container">
             <textarea
               v-model="userInput"
@@ -385,7 +549,7 @@
             <button
               class="send-btn"
               @click="sendMessage"
-              :disabled="!userInput.trim() || isTyping"
+              :disabled="!userInput.trim() || isTyping || isUploading"
             >
               <svg viewBox="0 0 24 24">
                 <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
@@ -618,6 +782,48 @@
         }
       }
 
+      /**
+       * Upload a file to get an attachment UUID for messages
+       */
+      async function uploadFile(file) {
+        try {
+          const apiUrl = `${CODEER_API_ROOT}/api/v1/chats/upload-file`;
+          const formData = new FormData();
+          formData.append("file", file);
+          formData.append("data", JSON.stringify({ scope: "persistent" }));
+
+          const response = await fetch(apiUrl, {
+            method: "POST",
+            headers: {
+              "x-api-key": CODEER_API_KEY,
+            },
+            body: formData,
+          });
+
+          if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(
+              `Upload failed: ${errorData.message || response.statusText} (${
+                response.status
+              })`
+            );
+          }
+
+          const resp = await response.json();
+          if (resp.error_code !== 0) {
+            throw new Error(
+              resp.data?.error_msg || resp.message || "Upload failed"
+            );
+          }
+
+          console.log("📎 File uploaded:", resp.data);
+          return resp.data;
+        } catch (err) {
+          console.error("❌ Error uploading file:", err);
+          throw err;
+        }
+      }
+
       // ============================================
       // Vue Application - UI Logic
       // ============================================
@@ -632,17 +838,59 @@
             historyId: null, // Chat session ID
             agentId: CODEER_DEFAULT_AGENT, // Agent ID from configuration
             isCreatingChat: false,
+            attachments: [],
+            isUploading: false,
+            uploadError: "",
           };
         },
         methods: {
+          handleUploadClick() {
+            const input = this.$refs.fileInput;
+            if (input) input.click();
+          },
+
+          async handleFileChange(event) {
+            const file = event.target.files && event.target.files[0];
+            if (!file) return;
+
+            this.uploadError = "";
+            this.isUploading = true;
+            try {
+              const uploaded = await uploadFile(file);
+              if (!this.attachments.some((att) => att.uuid === uploaded.uuid)) {
+                this.attachments.push({
+                  uuid: uploaded.uuid,
+                  name: uploaded.original_name || file.name,
+                  size: uploaded.size || file.size,
+                });
+              }
+            } catch (error) {
+              this.uploadError = error.message || "Failed to upload file";
+            } finally {
+              this.isUploading = false;
+              event.target.value = "";
+            }
+          },
+
+          removeAttachment(uuid) {
+            this.attachments = this.attachments.filter(
+              (item) => item.uuid !== uuid
+            );
+          },
+
           async sendMessage() {
             const input = this.userInput.trim();
-            if (!input || this.isTyping) return;
+            if (!input || this.isTyping || this.isUploading) return;
+
+            const attachmentsForSend = this.attachments.map((file) => ({
+              ...file,
+            }));
 
             this.messages.push({
               id: this.nextId++,
               role: "user",
               content: input,
+              attachments: attachmentsForSend,
             });
 
             this.userInput = "";
@@ -665,10 +913,13 @@
               }
             }
 
-            await this.sendMessageWithAPI(input);
+            this.attachments = [];
+            this.uploadError = "";
+
+            await this.sendMessageWithAPI(input, attachmentsForSend);
           },
 
-          async sendMessageWithAPI(message) {
+          async sendMessageWithAPI(message, attachmentsForSend = []) {
             const assistantMessageId = this.nextId++;
             this.currentAssistantMessageId = assistantMessageId;
 
@@ -679,14 +930,21 @@
             });
 
             try {
+              const attachmentIds = attachmentsForSend.map((file) => file.uuid);
+              const payload = {
+                message: message,
+                stream: true,
+                agent_id: this.agentId,
+              };
+
+              if (attachmentIds.length > 0) {
+                payload.attached_file_uuids = attachmentIds;
+              }
+
               let isFirstChunk = true;
               await sendQuestion(
                 this.historyId,
-                {
-                  message: message,
-                  stream: true,
-                  agent_id: this.agentId,
-                },
+                payload,
                 (data) => {
                   const messageIndex = this.messages.findIndex(
                     (msg) => msg.id === assistantMessageId
@@ -758,6 +1016,8 @@
             this.userInput = "";
             this.isTyping = false;
             this.currentAssistantMessageId = null;
+            this.attachments = [];
+            this.uploadError = "";
           },
         },
         mounted() {

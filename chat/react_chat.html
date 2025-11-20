@@ -211,6 +211,117 @@
         border-color: #19c37d;
       }
 
+      .upload-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 10px;
+        gap: 10px;
+      }
+
+      .upload-btn {
+        padding: 8px 12px;
+        background: #40414f;
+        border: 1px dashed #565869;
+        border-radius: 8px;
+        color: #ececf1;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        transition: all 0.2s;
+        flex-shrink: 0;
+      }
+
+      .upload-btn:hover:not(:disabled) {
+        background: #4d4d4f;
+        border-color: #19c37d;
+      }
+
+      .upload-btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+
+      .upload-status {
+        color: #8e8ea0;
+        font-size: 14px;
+      }
+
+      .upload-error {
+        color: #ff6b6b;
+        font-size: 14px;
+      }
+
+      .attachment-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+
+      .attachment-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        border-radius: 20px;
+        background: #202123;
+        border: 1px solid #565869;
+        color: #ececf1;
+        font-size: 13px;
+      }
+
+      .attachment-name {
+        max-width: 200px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .attachment-remove {
+        background: transparent;
+        border: none;
+        color: #8e8ea0;
+        cursor: pointer;
+        font-size: 14px;
+        padding: 0 4px;
+      }
+
+      .attachment-remove:hover {
+        color: #ff6b6b;
+      }
+
+      .message-attachments {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      .message-attachment {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        border-radius: 10px;
+        border: 1px solid #565869;
+        background: #2a2b32;
+        color: #ececf1;
+        font-size: 13px;
+      }
+
+      .message-attachment-icon {
+        font-size: 14px;
+      }
+
+      .message-attachment-name {
+        max-width: 220px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
       textarea {
         flex: 1;
         background: transparent;
@@ -548,6 +659,48 @@
         }
       }
 
+      /**
+       * Upload a file to get an attachment UUID for messages
+       */
+      async function uploadFile(file) {
+        try {
+          const apiUrl = `${CODEER_API_ROOT}/api/v1/chats/upload-file`;
+          const formData = new FormData();
+          formData.append("file", file);
+          formData.append("data", JSON.stringify({ scope: "persistent" }));
+
+          const response = await fetch(apiUrl, {
+            method: "POST",
+            headers: {
+              "x-api-key": CODEER_API_KEY,
+            },
+            body: formData,
+          });
+
+          if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(
+              `Upload failed: ${errorData.message || response.statusText} (${
+                response.status
+              })`
+            );
+          }
+
+          const resp = await response.json();
+          if (resp.error_code !== 0) {
+            throw new Error(
+              resp.data?.error_msg || resp.message || "Upload failed"
+            );
+          }
+
+          console.log("📎 File uploaded:", resp.data);
+          return resp.data;
+        } catch (err) {
+          console.error("❌ Error uploading file:", err);
+          throw err;
+        }
+      }
+
       // ============================================
       // React Application - UI Logic
       // ============================================
@@ -559,9 +712,13 @@
         const [currentAssistantMessageId, setCurrentAssistantMessageId] =
           useState(null);
         const [isCreatingChat, setIsCreatingChat] = useState(false);
+        const [attachments, setAttachments] = useState([]);
+        const [isUploading, setIsUploading] = useState(false);
+        const [uploadError, setUploadError] = useState("");
 
         const messagesContainerRef = useRef(null);
         const textareaRef = useRef(null);
+        const fileInputRef = useRef(null);
         const historyIdRef = useRef(null);
         const agentId = useRef(CODEER_DEFAULT_AGENT);
 
@@ -588,6 +745,43 @@
           console.log("🚀 Codeer Chat initialized");
         }, []);
 
+        const handleUploadClick = () => {
+          if (fileInputRef.current) {
+            fileInputRef.current.click();
+          }
+        };
+
+        const handleFileChange = async (e) => {
+          const file = e.target.files && e.target.files[0];
+          if (!file) return;
+
+          setUploadError("");
+          setIsUploading(true);
+          try {
+            const uploaded = await uploadFile(file);
+            setAttachments((prev) => {
+              if (prev.some((att) => att.uuid === uploaded.uuid)) return prev;
+              return [
+                ...prev,
+                {
+                  uuid: uploaded.uuid,
+                  name: uploaded.original_name || file.name,
+                  size: uploaded.size || file.size,
+                },
+              ];
+            });
+          } catch (error) {
+            setUploadError(error.message || "Failed to upload file");
+          } finally {
+            setIsUploading(false);
+            e.target.value = "";
+          }
+        };
+
+        const removeAttachment = (uuid) => {
+          setAttachments((prev) => prev.filter((item) => item.uuid !== uuid));
+        };
+
         const createNewChat = async (name) => {
           if (isCreatingChat) return null;
 
@@ -605,7 +799,8 @@
         const sendMessageWithAPI = async (
           message,
           chatHistoryId,
-          assistantMessageId
+          assistantMessageId,
+          attachmentsForSend = []
         ) => {
           setCurrentAssistantMessageId(assistantMessageId);
 
@@ -619,14 +814,21 @@
           ]);
 
           try {
+            const attachmentIds = attachmentsForSend.map((file) => file.uuid);
+            const payload = {
+              message: message,
+              stream: true,
+              agent_id: agentId.current,
+            };
+
+            if (attachmentIds.length > 0) {
+              payload.attached_file_uuids = attachmentIds;
+            }
+
             let isFirstChunk = true;
             await sendQuestion(
               chatHistoryId,
-              {
-                message: message,
-                stream: true,
-                agent_id: agentId.current,
-              },
+              payload,
               (data) => {
                 if (isFirstChunk) {
                   setIsTyping(false);
@@ -667,7 +869,9 @@
 
         const sendMessage = async () => {
           const input = userInput.trim();
-          if (!input || isTyping) return;
+          if (!input || isTyping || isUploading) return;
+
+          const attachmentsForSend = attachments.map((file) => ({ ...file }));
 
           // 预先计算用户消息和助手消息的ID
           const userMessageId = nextId;
@@ -680,6 +884,7 @@
               id: userMessageId,
               role: "user",
               content: input,
+              attachments: attachmentsForSend,
             },
           ]);
 
@@ -710,7 +915,15 @@
             }
           }
 
-          await sendMessageWithAPI(input, currentHistoryId, assistantMessageId);
+          setAttachments([]);
+          setUploadError("");
+
+          await sendMessageWithAPI(
+            input,
+            currentHistoryId,
+            assistantMessageId,
+            attachmentsForSend
+          );
         };
 
         const sendExamplePrompt = (prompt) => {
@@ -726,6 +939,8 @@
           setUserInput("");
           setIsTyping(false);
           setCurrentAssistantMessageId(null);
+          setAttachments([]);
+          setUploadError("");
         };
 
         const handleKeyDown = (e) => {
@@ -804,13 +1019,73 @@
                           )}
                       </div>
                     )}
+                    {message.attachments && message.attachments.length > 0 && (
+                      <div className="message-attachments">
+                        {message.attachments.map((file) => (
+                          <div className="message-attachment" key={file.uuid}>
+                            <span className="message-attachment-icon">📎</span>
+                            <span
+                              className="message-attachment-name"
+                              title={file.name}
+                            >
+                              {file.name}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}
             </div>
 
-            <div className="input-area">
+          <div className="input-area">
               <div className="input-wrapper">
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  style={{ display: "none" }}
+                  onChange={handleFileChange}
+                />
+                <div className="upload-row">
+                  <button
+                    className="upload-btn"
+                    onClick={handleUploadClick}
+                    disabled={isUploading}
+                  >
+                    <span>📎</span>
+                    <span>{isUploading ? "Uploading..." : "Attach file"}</span>
+                  </button>
+                  <div className="upload-status">
+                    {isUploading
+                      ? "Uploading to server..."
+                      : attachments.length > 0
+                      ? `${attachments.length} file${
+                          attachments.length > 1 ? "s" : ""
+                        } attached`
+                      : "Optional: upload files to share with the chat"}
+                  </div>
+                </div>
+                {uploadError && (
+                  <div className="upload-error">{uploadError}</div>
+                )}
+                {attachments.length > 0 && (
+                  <div className="attachment-list">
+                    {attachments.map((file) => (
+                      <div className="attachment-pill" key={file.uuid}>
+                        <span className="attachment-name">{file.name}</span>
+                        <span className="upload-status">attached</span>
+                        <button
+                          className="attachment-remove"
+                          onClick={() => removeAttachment(file.uuid)}
+                          title="Remove attachment"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <div className="input-container">
                   <textarea
                     ref={textareaRef}
@@ -823,7 +1098,7 @@
                   <button
                     className="send-btn"
                     onClick={sendMessage}
-                    disabled={!userInput.trim() || isTyping}
+                    disabled={!userInput.trim() || isTyping || isUploading}
                   >
                     <svg viewBox="0 0 24 24">
                       <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
