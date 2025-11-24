@@ -41,7 +41,14 @@ define('CODEER_DEFAULT_AGENT', null); // Optional: Set agent UUID or null for de
 function createChat($name = 'Untitled') {
     try {
         $apiUrl = CODEER_API_ROOT . '/api/v1/chats';
-        
+
+        $body = [
+            'name' => $name,
+        ];
+        if (CODEER_DEFAULT_AGENT) {
+            $body['agent_id'] = CODEER_DEFAULT_AGENT;
+        }
+
         $ch = curl_init($apiUrl);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
@@ -50,24 +57,19 @@ function createChat($name = 'Untitled') {
                 'Content-Type: application/json',
                 'x-api-key: ' . CODEER_API_KEY,
             ],
-            CURLOPT_POSTFIELDS => json_encode(['name' => $name]),
+            CURLOPT_POSTFIELDS => json_encode($body),
         ]);
         
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
-        
-        if ($httpCode !== 200) {
-            $errorData = json_decode($response, true);
-            throw new Exception(
-                sprintf("API error: %s (%d)", 
-                    $errorData['error'] ?? 'Failed to create chat', 
-                    $httpCode
-                )
-            );
-        }
-        
+
         $resp = json_decode($response, true);
+        if ($httpCode !== 200 || !is_array($resp) || ($resp['error_code'] ?? null) !== 0) {
+            $message = $resp['message'] ?? $resp['error'] ?? sprintf('Failed to create chat (HTTP %d)', $httpCode);
+            throw new Exception("API error: {$message}");
+        }
+
         echo "✅ New chat created: " . json_encode($resp) . "\n";
         return $resp['data'];
     } catch (Exception $err) {
@@ -103,6 +105,7 @@ function sendQuestion($historyId, $payload, $onMessage = null, $onDone = null, $
                 static $dataLines = [];
                 static $doneCalled = false;
                 static $buffer = '';
+                static $hasOutputText = false;
                 
                 // Add new data to buffer
                 $buffer .= $data;
@@ -118,20 +121,38 @@ function sendQuestion($historyId, $payload, $onMessage = null, $onDone = null, $
                     // Empty line triggers event dispatch
                     if ($line === '') {
                         if (!empty($dataLines) || $eventName !== null) {
-                            $payloadData = implode("\n", $dataLines);
+                            $rawPayload = trim(implode("\n", $dataLines));
                             $ev = strtolower($eventName ?? '');
-                            
-                            if (trim($payloadData) === '[DONE]') {
+
+                            if ($rawPayload === '') {
+                                $eventName = null;
+                                $dataLines = [];
+                                continue;
+                            }
+
+                            if ($rawPayload === '[DONE]') {
                                 if ($onDone && !$doneCalled) {
                                     $onDone();
                                     $doneCalled = true;
                                 }
                                 return strlen($data);
                             }
-                            
-                            if ($ev === 'error') {
+
+                            $parsed = null;
+                            if (strpos($rawPayload, '{') === 0) {
+                                $parsed = json_decode($rawPayload, true);
+                            }
+
+                            if ($ev === 'error' || (is_array($parsed) && ($parsed['type'] ?? null) === 'error')) {
+                                $message = null;
+                                if (is_array($parsed)) {
+                                    $message = $parsed['message'] ?? $parsed['error'] ?? null;
+                                }
+                                if (!$message) {
+                                    $message = $rawPayload ?: 'Stream error';
+                                }
                                 if ($onError) {
-                                    $onError(new Exception($payloadData ?: 'Stream error'));
+                                    $onError(new Exception($message));
                                 }
                                 if ($onDone && !$doneCalled) {
                                     $onDone();
@@ -139,12 +160,38 @@ function sendQuestion($historyId, $payload, $onMessage = null, $onDone = null, $
                                 }
                                 return strlen($data);
                             }
-                            
-                            if ($onMessage && $payloadData) {
-                                try {
-                                    $onMessage($payloadData);
-                                } catch (Exception $e) {
-                                    fwrite(STDERR, "Error processing message: " . $e->getMessage() . "\n");
+
+                            if ($onMessage) {
+                                $textChunk = null;
+
+                                if (
+                                    is_array($parsed) &&
+                                    ($parsed['type'] ?? null) === 'response.output_text.delta' &&
+                                    isset($parsed['delta']) &&
+                                    is_string($parsed['delta'])
+                                ) {
+                                    $textChunk = $parsed['delta'];
+                                    $hasOutputText = true;
+                                } elseif (
+                                    is_array($parsed) &&
+                                    ($parsed['type'] ?? null) === 'response.output_text.completed' &&
+                                    isset($parsed['final_text']) &&
+                                    is_string($parsed['final_text']) &&
+                                    !$hasOutputText
+                                ) {
+                                    // Fallback if no deltas were streamed
+                                    $textChunk = $parsed['final_text'];
+                                } elseif ($parsed === null) {
+                                    // Legacy plain-text streaming fallback
+                                    $textChunk = $rawPayload;
+                                }
+
+                                if ($textChunk !== null && $textChunk !== '') {
+                                    try {
+                                        $onMessage($textChunk);
+                                    } catch (Exception $e) {
+                                        fwrite(STDERR, "Error processing message: " . $e->getMessage() . "\n");
+                                    }
                                 }
                             }
                             
@@ -380,4 +427,3 @@ if (php_sapi_name() === 'cli') {
     main();
 }
 ?>
-

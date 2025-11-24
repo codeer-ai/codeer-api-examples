@@ -20,14 +20,15 @@ import requests
 from typing import Optional, Callable
 import io
 import locale
+import json
 
 # Set locale to UTF-8
 try:
     locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
-except:
+except Exception:
     try:
         locale.setlocale(locale.LC_ALL, 'C.UTF-8')
-    except:
+    except Exception:
         pass
 
 # Ensure UTF-8 encoding for stdout
@@ -54,23 +55,35 @@ def create_chat(name: str = "Untitled") -> dict:
     """
     try:
         api_url = f"{CODEER_API_ROOT}/api/v1/chats"
-        
+
+        body = {
+            "name": name,
+        }
+        if CODEER_DEFAULT_AGENT:
+            body["agent_id"] = CODEER_DEFAULT_AGENT
+
         response = requests.post(
             api_url,
             headers={
                 "Content-Type": "application/json",
                 "x-api-key": CODEER_API_KEY,
             },
-            json={"name": name}
+            json=body,
         )
-        
-        if not response.ok:
-            error_data = response.json()
-            raise Exception(
-                f"API error: {error_data.get('error', 'Failed to create chat')} ({response.status_code})"
-            )
-        
-        resp = response.json()
+
+        try:
+            resp = response.json()
+        except Exception:
+            resp = None
+
+        if not response.ok or not resp or resp.get("error_code") != 0:
+            message = None
+            if isinstance(resp, dict):
+                message = resp.get("message") or resp.get("error")
+            if not message:
+                message = f"Failed to create chat (HTTP {response.status_code})"
+            raise Exception(f"API error: {message}")
+
         print(f"✅ New chat created: {resp}")
         return resp["data"]
     except Exception as err:
@@ -106,47 +119,97 @@ def send_question(
             },
             json=payload,
         )
-        response.encoding = 'utf-8'
-        
+        response.encoding = "utf-8"
+
+        error_data = None
         if not response.ok:
-            error_data = response.json()
-            raise Exception(
-                f"API error: {error_data.get('error')} ({response.status_code})"
-            )
+            try:
+                error_data = response.json()
+            except Exception:
+                error_data = None
+            message = None
+            if isinstance(error_data, dict):
+                message = error_data.get("message") or error_data.get("error")
+            if not message:
+                message = f"HTTP {response.status_code}"
+            raise Exception(f"API error: {message}")
         
         # Parse SSE stream
         event_name = None
         data_lines = []
         done_called = False
-        
+        has_output_text = False
+
         def dispatch_event():
-            nonlocal event_name, data_lines, done_called
+            nonlocal event_name, data_lines, done_called, has_output_text
             
             if not data_lines and not event_name:
                 return False
             
-            payload_data = "\n".join(data_lines)
+            raw_payload = "\n".join(data_lines).strip()
             ev = (event_name or "").lower()
-            
-            if payload_data and payload_data.strip() == "[DONE]":
+
+            if not raw_payload:
+                event_name = None
+                data_lines = []
+                return False
+
+            if raw_payload == "[DONE]":
                 if on_done and not done_called:
                     on_done()
                     done_called = True
                 return True
-            
-            if ev == "error":
-                if on_error:
-                    on_error(Exception(payload_data or "Stream error"))
-                if on_done and not done_called:
-                    on_done()
-                    done_called = True
-                return True
-            
-            if on_message and payload_data:
+
+            parsed = None
+            if raw_payload.startswith("{"):
                 try:
-                    on_message(payload_data)
+                    parsed = json.loads(raw_payload)
                 except Exception as e:
-                    print(f"Error processing message: {e}", file=sys.stderr)
+                    print(
+                        f"Failed to parse SSE JSON: {e} | {raw_payload}",
+                        file=sys.stderr,
+                    )
+
+            if ev == "error" or (isinstance(parsed, dict) and parsed.get("type") == "error"):
+                message = None
+                if isinstance(parsed, dict):
+                    message = parsed.get("message") or parsed.get("error")
+                if not message:
+                    message = raw_payload or "Stream error"
+                if on_error:
+                    on_error(Exception(message))
+                if on_done and not done_called:
+                    on_done()
+                    done_called = True
+                return True
+
+            if on_message:
+                text_chunk: Optional[str] = None
+
+                if (
+                    isinstance(parsed, dict)
+                    and parsed.get("type") == "response.output_text.delta"
+                    and isinstance(parsed.get("delta"), str)
+                ):
+                    text_chunk = parsed["delta"]
+                    has_output_text = True
+                elif (
+                    isinstance(parsed, dict)
+                    and parsed.get("type") == "response.output_text.completed"
+                    and isinstance(parsed.get("final_text"), str)
+                    and not has_output_text
+                ):
+                    # Fallback if no deltas were streamed
+                    text_chunk = parsed["final_text"]
+                elif parsed is None:
+                    # Legacy plain-text streaming fallback
+                    text_chunk = raw_payload
+
+                if text_chunk:
+                    try:
+                        on_message(text_chunk)
+                    except Exception as e:
+                        print(f"Error processing message: {e}", file=sys.stderr)
             
             event_name = None
             data_lines = []
@@ -334,4 +397,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

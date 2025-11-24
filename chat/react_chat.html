@@ -474,25 +474,31 @@
         try {
           const apiUrl = `${CODEER_API_ROOT}/api/v1/chats`;
 
+          const body = {
+            name: name,
+          };
+
+          if (CODEER_DEFAULT_AGENT) {
+            body.agent_id = CODEER_DEFAULT_AGENT;
+          }
+
           const response = await fetch(apiUrl, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
               "x-api-key": CODEER_API_KEY,
             },
-            body: JSON.stringify({ name: name }),
+            body: JSON.stringify(body),
           });
 
-          if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(
-              `API error: ${errorData.error || "Failed to create chat"} (${
-                response.status
-              })`
-            );
+          const resp = await response.json().catch(() => null);
+          if (!response.ok || !resp || resp.error_code !== 0) {
+            const message =
+              (resp && (resp.message || resp.error)) ||
+              `Failed to create chat (HTTP ${response.status})`;
+            throw new Error(`API error: ${message}`);
           }
 
-          const resp = await response.json();
           console.log("✅ New chat created:", resp);
           return resp.data;
         } catch (err) {
@@ -528,11 +534,13 @@
             body: JSON.stringify(payload),
           });
 
+          let errorData = null;
           if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(
-              `API error: ${errorData.error} (${response.status})`
-            );
+            errorData = await response.json().catch(() => null);
+            const message =
+              (errorData && (errorData.message || errorData.error)) ||
+              `HTTP ${response.status}`;
+            throw new Error(`API error: ${message}`);
           }
 
           if (response.body === null) {
@@ -547,14 +555,21 @@
           let eventName = null;
           let dataLines = [];
           let doneCalled = false;
+          let hasOutputText = false;
 
           const dispatchEvent = async () => {
             if (dataLines.length === 0 && !eventName) return false;
 
-            const payload = dataLines.join("\n");
+            const rawPayload = dataLines.join("\n").trim();
             const ev = (eventName || "").toLowerCase();
 
-            if (payload && payload.trim() === "[DONE]") {
+            if (!rawPayload) {
+              eventName = null;
+              dataLines = [];
+              return false;
+            }
+
+            if (rawPayload === "[DONE]") {
               if (onDone && !doneCalled) {
                 onDone();
                 doneCalled = true;
@@ -562,20 +577,57 @@
               return true;
             }
 
-            if (ev === "error") {
-              if (onError) onError(new Error(payload || "Stream error"));
-              if (onDone && !doneCalled) {
-                onDone();
-                doneCalled = true;
-              }
-              return true;
-            }
-
-            if (onMessage && payload.length > 0) {
+            let parsed = null;
+            if (rawPayload.startsWith("{")) {
               try {
-                onMessage(payload);
+                parsed = JSON.parse(rawPayload);
               } catch (e) {
-                console.error("Error processing message:", e);
+                console.error("Failed to parse SSE JSON:", e, rawPayload);
+              }
+            }
+
+            if (ev === "error" || (parsed && parsed.type === "error")) {
+              const message =
+                (parsed && (parsed.message || parsed.error)) ||
+                rawPayload ||
+                "Stream error";
+              if (onError) onError(new Error(message));
+              if (onDone && !doneCalled) {
+                onDone();
+                doneCalled = true;
+              }
+              return true;
+            }
+
+            if (onMessage) {
+              let textChunk = null;
+
+              if (
+                parsed &&
+                parsed.type === "response.output_text.delta" &&
+                typeof parsed.delta === "string"
+              ) {
+                textChunk = parsed.delta;
+                hasOutputText = true;
+              } else if (
+                parsed &&
+                parsed.type === "response.output_text.completed" &&
+                typeof parsed.final_text === "string" &&
+                !hasOutputText
+              ) {
+                // Fallback if no deltas were streamed
+                textChunk = parsed.final_text;
+              } else if (!parsed) {
+                // Legacy plain-text streaming fallback
+                textChunk = rawPayload;
+              }
+
+              if (textChunk && textChunk.length > 0) {
+                try {
+                  onMessage(textChunk);
+                } catch (e) {
+                  console.error("Error processing message:", e);
+                }
               }
             }
 
