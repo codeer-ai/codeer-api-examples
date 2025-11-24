@@ -103,6 +103,8 @@
         gap: 16px;
         padding: 20px;
         animation: fadeIn 0.3s ease-in;
+        max-width: 100%;
+        box-sizing: border-box;
       }
 
       @keyframes fadeIn {
@@ -149,6 +151,9 @@
         line-height: 1.6;
         font-size: 16px;
         word-wrap: break-word;
+        max-width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
       }
 
       .typing-indicator {
@@ -320,6 +325,57 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+      }
+
+      .reasoning-steps {
+        margin-top: 8px;
+        padding: 8px 10px;
+        border-radius: 8px;
+        background: #202123;
+        border: 1px solid #565869;
+        color: #8e8ea0;
+        font-size: 13px;
+        max-width: 100%;
+        box-sizing: border-box;
+        overflow-x: hidden;
+      }
+
+      .reasoning-step {
+        display: flex;
+        align-items: flex-start;
+        gap: 6px;
+        margin-bottom: 4px;
+      }
+
+      .reasoning-step:last-child {
+        margin-bottom: 0;
+      }
+
+      .reasoning-step-status {
+        font-size: 14px;
+      }
+
+      .reasoning-step-content {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .reasoning-step-json {
+        margin-top: 4px;
+        padding: 6px 8px;
+        border-radius: 6px;
+        background: #16171c;
+        border: 1px solid #3a3b46;
+        font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+          "Courier New", monospace;
+        font-size: 12px;
+        color: #d0d0d5;
+        max-height: 160px;
+        max-width: 100%;
+        box-sizing: border-box;
+        overflow-x: auto;
+        overflow-y: auto;
+        white-space: pre;
       }
 
       textarea {
@@ -511,16 +567,18 @@
        * Send a message and receive streaming response via Server-Sent Events (SSE)
        * @param {string} historyId - Chat session ID from createChat()
        * @param {Object} payload - { message: string, stream: boolean, agent_id?: number }
-       * @param {Function} onMessage - Called for each chunk of the response
+       * @param {Function} onMessage - Called for each output text chunk
        * @param {Function} onDone - Called when streaming completes
        * @param {Function} onError - Called if an error occurs
+       * @param {Function} onReasoningEvent - Called for reasoning_step start/end events
        */
       async function sendQuestion(
         historyId,
         payload,
         onMessage,
         onDone,
-        onError
+        onError,
+        onReasoningEvent
       ) {
         try {
           const apiUrl = `${CODEER_API_ROOT}/api/v1/chats/${historyId}/messages`;
@@ -584,6 +642,23 @@
               } catch (e) {
                 console.error("Failed to parse SSE JSON:", e, rawPayload);
               }
+            }
+
+            if (
+              parsed &&
+              (parsed.type === "response.reasoning_step.start" ||
+                parsed.type === "response.reasoning_step.end")
+            ) {
+              if (typeof onReasoningEvent === "function") {
+                try {
+                  onReasoningEvent(parsed);
+                } catch (e) {
+                  console.error("Error processing reasoning event:", e);
+                }
+              }
+              eventName = null;
+              dataLines = [];
+              return false;
             }
 
             if (ev === "error" || (parsed && parsed.type === "error")) {
@@ -767,12 +842,102 @@
         const [attachments, setAttachments] = useState([]);
         const [isUploading, setIsUploading] = useState(false);
         const [uploadError, setUploadError] = useState("");
+        const [reasoningStepsByMessage, setReasoningStepsByMessage] =
+          useState({});
 
         const messagesContainerRef = useRef(null);
         const textareaRef = useRef(null);
         const fileInputRef = useRef(null);
         const historyIdRef = useRef(null);
         const agentId = useRef(CODEER_DEFAULT_AGENT);
+
+        const renderAssistantContent = (message) => {
+          const stepsForMessage = reasoningStepsByMessage[message.id] || [];
+          const text = message.content || "";
+
+          const cursor =
+            message.id === currentAssistantMessageId && text !== "" ? (
+              <span className="streaming-cursor"></span>
+            ) : null;
+
+          if (stepsForMessage.length === 0) {
+            return (
+              <>
+                {text}
+                {cursor}
+              </>
+            );
+          }
+
+          const parts = [];
+          const toolTagRegex = /<tool\s+id=([^>]+)>([\s\S]*?)<\/tool>/g;
+          let lastIndex = 0;
+          let match;
+
+          while ((match = toolTagRegex.exec(text)) !== null) {
+            const fullMatch = match[0];
+            const matchStart = match.index;
+            const matchEnd = matchStart + fullMatch.length;
+            const idRaw = match[1];
+            const inner = match[2];
+
+            if (matchStart > lastIndex) {
+              parts.push(text.slice(lastIndex, matchStart));
+            }
+
+            const toolId = idRaw.replace(/^["']|["']$/g, "");
+            const matchedStep =
+              stepsForMessage.find((step) => step.id === toolId) ||
+              stepsForMessage.find(
+                (step) => step.type === inner || step.content === inner
+              );
+
+            if (!matchedStep) {
+              // If we cannot match, keep the raw tag text
+              parts.push(text.slice(matchStart, matchEnd));
+            } else {
+              parts.push(
+                <div
+                  key={`tool-${message.id}-${toolId}-${matchStart}`}
+                  className="reasoning-steps"
+                >
+                  <div className="reasoning-step">
+                    <span className="reasoning-step-status">
+                      {matchedStep.status === "completed" ? "✅" : "🧠"}
+                    </span>
+                    <span className="reasoning-step-content">
+                      {matchedStep.type
+                        ? `[${matchedStep.type}] (${matchedStep.id}) ${
+                            matchedStep.content || ""
+                          }`
+                        : matchedStep.content || matchedStep.id}
+                      {matchedStep.args && (
+                        <div className="reasoning-step-json">
+                          {JSON.stringify(matchedStep.args, null, 2)}
+                        </div>
+                      )}
+                      {matchedStep.result && (
+                        <div className="reasoning-step-json">
+                          {JSON.stringify(matchedStep.result, null, 2)}
+                        </div>
+                      )}
+                    </span>
+                  </div>
+                </div>
+              );
+            }
+
+            lastIndex = matchEnd;
+          }
+
+          if (lastIndex < text.length) {
+            parts.push(text.slice(lastIndex));
+          }
+
+          parts.push(cursor);
+
+          return parts;
+        };
 
         const scrollToBottom = () => {
           if (messagesContainerRef.current) {
@@ -878,6 +1043,12 @@
             }
 
             let isFirstChunk = true;
+            // Clear any previous reasoning steps for this assistant message
+            setReasoningStepsByMessage((prev) => {
+              const next = { ...prev };
+              delete next[assistantMessageId];
+              return next;
+            });
             await sendQuestion(
               chatHistoryId,
               payload,
@@ -912,6 +1083,56 @@
                 );
                 setIsTyping(false);
                 setCurrentAssistantMessageId(null);
+              },
+              (event) => {
+                if (!event || !event.type || !event.step) return;
+
+                setReasoningStepsByMessage((prev) => {
+                  const existing = prev[assistantMessageId] || [];
+                  if (event.type === "response.reasoning_step.start") {
+                    const step = event.step || {};
+                    const id = step.id || `step-${existing.length + 1}`;
+                    const newStep = {
+                      id,
+                      type: step.type || "",
+                      content: step.content || "",
+                      status: "running",
+                      args: step.args || null,
+                      result: null,
+                    };
+                    return {
+                      ...prev,
+                      [assistantMessageId]: [...existing, newStep],
+                    };
+                  }
+
+                  if (event.type === "response.reasoning_step.end") {
+                    const step = event.step || {};
+                    const id = step.id;
+                    if (!id || existing.length === 0) {
+                      return prev;
+                    }
+                    const updated = existing.map((s) =>
+                      s.id === id
+                        ? {
+                            ...s,
+                            status: "completed",
+                            result:
+                              (event.step && event.step.result) || s.result,
+                            tokenUsage:
+                              (event.step && event.step.token_usage) ||
+                              s.tokenUsage,
+                          }
+                        : s
+                    );
+                    return {
+                      ...prev,
+                      [assistantMessageId]: updated,
+                    };
+                  }
+
+                  return prev;
+                });
               }
             );
           } catch (error) {
@@ -993,6 +1214,7 @@
           setCurrentAssistantMessageId(null);
           setAttachments([]);
           setUploadError("");
+          setReasoningStepsByMessage({});
         };
 
         const handleKeyDown = (e) => {
@@ -1064,11 +1286,9 @@
                       </div>
                     ) : (
                       <div style={{ whiteSpace: "pre-wrap" }}>
-                        {message.content}
-                        {message.id === currentAssistantMessageId &&
-                          message.content !== "" && (
-                            <span className="streaming-cursor"></span>
-                          )}
+                        {message.role === "assistant"
+                          ? renderAssistantContent(message)
+                          : message.content}
                       </div>
                     )}
                     {message.attachments && message.attachments.length > 0 && (

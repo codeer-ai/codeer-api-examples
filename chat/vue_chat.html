@@ -89,6 +89,8 @@
         gap: 16px;
         padding: 20px;
         animation: fadeIn 0.3s ease-in;
+        max-width: 100%;
+        box-sizing: border-box;
       }
 
       @keyframes fadeIn {
@@ -135,6 +137,9 @@
         line-height: 1.6;
         font-size: 16px;
         word-wrap: break-word;
+        max-width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
       }
 
       .typing-indicator {
@@ -308,6 +313,57 @@
         white-space: nowrap;
       }
 
+      .reasoning-steps {
+        margin-top: 8px;
+        padding: 8px 10px;
+        border-radius: 8px;
+        background: #202123;
+        border: 1px solid #565869;
+        color: #8e8ea0;
+        font-size: 13px;
+        max-width: 100%;
+        box-sizing: border-box;
+        overflow-x: hidden;
+      }
+
+      .reasoning-step {
+        display: flex;
+        align-items: flex-start;
+        gap: 6px;
+        margin-bottom: 4px;
+      }
+
+      .reasoning-step:last-child {
+        margin-bottom: 0;
+      }
+
+      .reasoning-step-status {
+        font-size: 14px;
+      }
+
+      .reasoning-step-content {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .reasoning-step-json {
+        margin-top: 4px;
+        padding: 6px 8px;
+        border-radius: 6px;
+        background: #16171c;
+        border: 1px solid #3a3b46;
+        font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+          "Courier New", monospace;
+        font-size: 12px;
+        color: #d0d0d5;
+        max-height: 160px;
+        max-width: 100%;
+        box-sizing: border-box;
+        overflow-x: auto;
+        overflow-y: auto;
+        white-space: pre;
+      }
+
       textarea {
         flex: 1;
         background: transparent;
@@ -473,11 +529,58 @@
               <span></span>
             </div>
             <div v-else style="white-space: pre-wrap">
-              {{ message.content }}
-              <span
-                v-if="message.id === currentAssistantMessageId && message.content !== ''"
-                class="streaming-cursor"
-              ></span>
+              <template v-if="message.role === 'assistant'">
+                <template
+                  v-for="(part, index) in renderAssistantParts(message)"
+                  :key="index"
+                >
+                  <span v-if="part.kind === 'text'">
+                    {{ part.text }}
+                  </span>
+                  <div v-else class="reasoning-steps">
+                    <div class="reasoning-step">
+                      <span class="reasoning-step-status">
+                        {{
+                          part.step.status === "completed"
+                            ? "✅"
+                            : "🧠"
+                        }}
+                      </span>
+                      <span class="reasoning-step-content">
+                        {{
+                          part.step.type
+                            ? `[${part.step.type}] (${part.step.id}) ${
+                                part.step.content || ""
+                              }`
+                            : part.step.content || part.step.id
+                        }}
+                        <div
+                          v-if="part.step.args"
+                          class="reasoning-step-json"
+                        >
+                          {{ formatJson(part.step.args) }}
+                        </div>
+                        <div
+                          v-if="part.step.result"
+                          class="reasoning-step-json"
+                        >
+                          {{ formatJson(part.step.result) }}
+                        </div>
+                      </span>
+                    </div>
+                  </div>
+                </template>
+                <span
+                  v-if="
+                    message.id === currentAssistantMessageId &&
+                    message.content !== ''
+                  "
+                  class="streaming-cursor"
+                ></span>
+              </template>
+              <template v-else>
+                {{ message.content }}
+              </template>
             </div>
             <div
               v-if="message.attachments && message.attachments.length > 0"
@@ -643,7 +746,8 @@
         payload,
         onMessage,
         onDone,
-        onError
+        onError,
+        onReasoningEvent
       ) {
         try {
           const apiUrl = `${CODEER_API_ROOT}/api/v1/chats/${historyId}/messages`;
@@ -707,6 +811,23 @@
               } catch (e) {
                 console.error("Failed to parse SSE JSON:", e, rawPayload);
               }
+            }
+
+            if (
+              parsed &&
+              (parsed.type === "response.reasoning_step.start" ||
+                parsed.type === "response.reasoning_step.end")
+            ) {
+              if (typeof onReasoningEvent === "function") {
+                try {
+                  onReasoningEvent(parsed);
+                } catch (e) {
+                  console.error("Error processing reasoning event:", e);
+                }
+              }
+              eventName = null;
+              dataLines = [];
+              return false;
             }
 
             if (ev === "error" || (parsed && parsed.type === "error")) {
@@ -893,6 +1014,7 @@
             attachments: [],
             isUploading: false,
             uploadError: "",
+            reasoningStepsByMessage: {},
           };
         },
         methods: {
@@ -981,6 +1103,9 @@
               content: "",
             });
 
+            // Clear any previous reasoning steps bound to this assistant message
+            this.reasoningStepsByMessage[assistantMessageId] = [];
+
             try {
               const attachmentIds = attachmentsForSend.map((file) => file.uuid);
               const payload = {
@@ -1028,6 +1153,54 @@
                   this.isTyping = false;
                   this.currentAssistantMessageId = null;
                   this.scrollToBottom();
+                },
+                (event) => {
+                  if (!event || !event.type || !event.step) return;
+
+                  const existing =
+                    this.reasoningStepsByMessage[assistantMessageId] || [];
+
+                  if (event.type === "response.reasoning_step.start") {
+                    const step = event.step || {};
+                    const id = step.id || `step-${existing.length + 1}`;
+                    const newStep = {
+                      id,
+                      type: step.type || "",
+                      content: step.content || "",
+                      status: "running",
+                      args: step.args || null,
+                      result: null,
+                      tokenUsage: null,
+                    };
+                    this.reasoningStepsByMessage[assistantMessageId] = [
+                      ...existing,
+                      newStep,
+                    ];
+                    return;
+                  }
+
+                  if (event.type === "response.reasoning_step.end") {
+                    const step = event.step || {};
+                    const id = step.id;
+                    if (!id || existing.length === 0) {
+                      return;
+                    }
+                    const updated = existing.map((s) =>
+                      s.id === id
+                        ? {
+                            ...s,
+                            status: "completed",
+                            result:
+                              (event.step && event.step.result) || s.result,
+                            tokenUsage:
+                              (event.step && event.step.token_usage) ||
+                              s.tokenUsage,
+                          }
+                        : s
+                    );
+                    this.reasoningStepsByMessage[assistantMessageId] =
+                      updated;
+                  }
                 }
               );
             } catch (error) {
@@ -1070,6 +1243,79 @@
             this.currentAssistantMessageId = null;
             this.attachments = [];
             this.uploadError = "";
+            this.reasoningStepsByMessage = {};
+          },
+
+          renderAssistantParts(message) {
+            const stepsForMessage =
+              this.reasoningStepsByMessage[message.id] || [];
+            const text = message.content || "";
+
+            if (!stepsForMessage.length) {
+              return [{ kind: "text", text }];
+            }
+
+            const parts = [];
+            const toolTagRegex = /<tool\s+id=([^>]+)>([\s\S]*?)<\/tool>/g;
+            let lastIndex = 0;
+            let match;
+
+            while ((match = toolTagRegex.exec(text)) !== null) {
+              const fullMatch = match[0];
+              const matchStart = match.index;
+              const matchEnd = matchStart + fullMatch.length;
+              const idRaw = match[1];
+              const inner = match[2];
+
+              if (matchStart > lastIndex) {
+                parts.push({
+                  kind: "text",
+                  text: text.slice(lastIndex, matchStart),
+                });
+              }
+
+              const toolId = idRaw.replace(/^["']|["']$/g, "");
+              let matchedStep =
+                stepsForMessage.find((step) => step.id === toolId) || null;
+
+              if (!matchedStep) {
+                matchedStep =
+                  stepsForMessage.find((step) => step.type === inner) ||
+                  stepsForMessage.find((step) => step.content === inner) ||
+                  null;
+              }
+
+              if (!matchedStep) {
+                parts.push({
+                  kind: "text",
+                  text: text.slice(matchStart, matchEnd),
+                });
+              } else {
+                parts.push({
+                  kind: "step",
+                  step: matchedStep,
+                });
+              }
+
+              lastIndex = matchEnd;
+            }
+
+            if (lastIndex < text.length) {
+              parts.push({
+                kind: "text",
+                text: text.slice(lastIndex),
+              });
+            }
+
+            return parts;
+          },
+
+          formatJson(obj) {
+            try {
+              return JSON.stringify(obj, null, 2);
+            } catch (e) {
+              return String(obj);
+            }
           },
         },
         mounted() {
