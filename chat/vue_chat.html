@@ -47,6 +47,39 @@
         gap: 10px;
       }
 
+      .header-controls {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .agent-select-wrapper {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: #ececf1;
+        font-size: 14px;
+      }
+
+      .agent-select-label {
+        color: #8e8ea0;
+        font-size: 13px;
+      }
+
+      .agent-select {
+        background: #343541;
+        border-radius: 6px;
+        border: 1px solid #565869;
+        color: #ececf1;
+        padding: 6px 8px;
+        font-size: 14px;
+      }
+
+      .agent-select:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+
       .new-chat-btn {
         padding: 8px 16px;
         background: transparent;
@@ -483,7 +516,28 @@
           <span>💬</span>
           <span>Codeer AI</span>
         </h1>
-        <button class="new-chat-btn" @click="clearChat">+ New Chat</button>
+        <div class="header-controls">
+          <div class="agent-select-wrapper">
+            <span class="agent-select-label">Agent</span>
+            <select
+              class="agent-select"
+              v-model="selectedAgentId"
+              :disabled="hasHistory || isTyping || isUploading || isCreatingChat"
+            >
+              <option v-if="!selectedAgentId" value="">
+                {{ isLoadingAgents ? "Loading..." : "Default" }}
+              </option>
+              <option
+                v-for="agent in agents"
+                :key="agent.id"
+                :value="agent.id"
+              >
+                {{ agent.name || agent.id }}
+              </option>
+            </select>
+          </div>
+          <button class="new-chat-btn" @click="clearChat">+ New Chat</button>
+        </div>
       </div>
 
       <div class="messages-container" ref="messagesContainer">
@@ -695,7 +749,7 @@
        * Create a new chat session
        * Returns chat object with ID for subsequent messages
        */
-      async function createChat(name) {
+      async function createChat(name, agentId) {
         name = name || "Untitled";
         try {
           const apiUrl = `${CODEER_API_ROOT}/api/v1/chats`;
@@ -704,8 +758,9 @@
             name: name,
           };
 
-          if (CODEER_DEFAULT_AGENT) {
-            body.agent_id = CODEER_DEFAULT_AGENT;
+          const effectiveAgentId = agentId || CODEER_DEFAULT_AGENT;
+          if (effectiveAgentId) {
+            body.agent_id = effectiveAgentId;
           }
 
           const response = await fetch(apiUrl, {
@@ -729,6 +784,37 @@
           return resp.data;
         } catch (err) {
           console.error("❌ Error creating chat:", err);
+          throw err;
+        }
+      }
+
+      /**
+       * List published agents for this workspace
+       * Returns an array of agents [{ id, name, description, ... }]
+       */
+      async function listPublishedAgents() {
+        try {
+          const apiUrl = `${CODEER_API_ROOT}/api/v1/chats/published-agents`;
+
+          const response = await fetch(apiUrl, {
+            method: "GET",
+            headers: {
+              "x-api-key": CODEER_API_KEY,
+            },
+          });
+
+          const resp = await response.json().catch(() => null);
+          if (!response.ok || !resp || resp.error_code !== 0) {
+            const message =
+              (resp && (resp.message || resp.error)) ||
+              `Failed to list agents (HTTP ${response.status})`;
+            throw new Error(`API error: ${message}`);
+          }
+
+          console.log("📚 Published agents:", resp.data);
+          return resp.data || [];
+        } catch (err) {
+          console.error("❌ Error listing agents:", err);
           throw err;
         }
       }
@@ -1010,6 +1096,11 @@
             currentAssistantMessageId: null,
             historyId: null, // Chat session ID
             agentId: CODEER_DEFAULT_AGENT, // Agent ID from configuration
+            agents: [],
+            isLoadingAgents: false,
+            agentsError: "",
+            selectedAgentId: CODEER_DEFAULT_AGENT || "",
+            hasHistory: false,
             isCreatingChat: false,
             attachments: [],
             isUploading: false,
@@ -1050,6 +1141,30 @@
             this.attachments = this.attachments.filter(
               (item) => item.uuid !== uuid
             );
+          },
+
+          async loadAgents() {
+            this.isLoadingAgents = true;
+            this.agentsError = "";
+            try {
+              const list = await listPublishedAgents();
+              this.agents = list;
+
+              let initial = this.selectedAgentId || this.agentId || "";
+              if (!initial && list && list.length > 0) {
+                initial = list[0].id;
+              }
+
+              this.selectedAgentId = initial;
+              this.agentId = initial || "";
+            } catch (error) {
+              console.error("Failed to load agents:", error);
+              this.agentsError = error.message || "Failed to load agents";
+              this.agentId =
+                this.selectedAgentId || CODEER_DEFAULT_AGENT || "";
+            } finally {
+              this.isLoadingAgents = false;
+            }
           },
 
           async sendMessage() {
@@ -1227,8 +1342,12 @@
 
             this.isCreatingChat = true;
             try {
-              const newHistory = await createChat(name.substring(0, 256));
+              const newHistory = await createChat(
+                name.substring(0, 256),
+                this.agentId || undefined
+              );
               this.historyId = newHistory.id;
+              this.hasHistory = true;
               console.log(`🆕 Chat created with ID: ${newHistory.id}`);
             } finally {
               this.isCreatingChat = false;
@@ -1237,6 +1356,7 @@
 
           async clearChat() {
             this.historyId = null;
+            this.hasHistory = false;
             this.messages = [];
             this.userInput = "";
             this.isTyping = false;
@@ -1325,6 +1445,17 @@
               textarea.style.height = "auto";
               textarea.style.height = textarea.scrollHeight + "px";
             }
+          });
+
+          this.$watch(
+            "selectedAgentId",
+            (value) => {
+              this.agentId = value || "";
+            }
+          );
+
+          this.loadAgents().catch((error) => {
+            console.error("Failed to load agents:", error);
           });
 
           console.log("🚀 Codeer Chat initialized");

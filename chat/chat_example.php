@@ -12,7 +12,7 @@
  * - Set CODEER_API_KEY, CODEER_API_ROOT, and CODEER_DEFAULT_AGENT
  * - Run: php chat_example.php
  * - Type messages and see streaming responses
- * - Commands: /new (new chat), /quit (exit)
+ * - Commands: /new, /agents, /agent <id|#>, /quit
  */
 
 // Set UTF-8 encoding
@@ -35,18 +35,20 @@ define('CODEER_DEFAULT_AGENT', null); // Optional: Set agent UUID or null for de
  * Returns chat object with ID for subsequent messages
  *
  * @param string $name Chat name
+ * @param string|null $agentId Agent ID override
  * @return array Chat data
  * @throws Exception
  */
-function createChat($name = 'Untitled') {
+function createChat($name = 'Untitled', $agentId = null) {
     try {
         $apiUrl = CODEER_API_ROOT . '/api/v1/chats';
 
         $body = [
             'name' => $name,
         ];
-        if (CODEER_DEFAULT_AGENT) {
-            $body['agent_id'] = CODEER_DEFAULT_AGENT;
+        $effectiveAgentId = $agentId ?: CODEER_DEFAULT_AGENT;
+        if ($effectiveAgentId) {
+            $body['agent_id'] = $effectiveAgentId;
         }
 
         $ch = curl_init($apiUrl);
@@ -74,6 +76,42 @@ function createChat($name = 'Untitled') {
         return $resp['data'];
     } catch (Exception $err) {
         echo "❌ Error creating chat: " . $err->getMessage() . "\n";
+        throw $err;
+    }
+}
+
+/**
+ * List published agents for this workspace.
+ *
+ * @return array List of agents
+ * @throws Exception
+ */
+function listPublishedAgents() {
+    try {
+        $apiUrl = CODEER_API_ROOT . '/api/v1/chats/published-agents';
+
+        $ch = curl_init($apiUrl);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER => [
+                'x-api-key: ' . CODEER_API_KEY,
+            ],
+        ]);
+
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        $resp = json_decode($response, true);
+        if ($httpCode !== 200 || !is_array($resp) || ($resp['error_code'] ?? null) !== 0) {
+            $message = $resp['message'] ?? $resp['error'] ?? sprintf('Failed to list agents (HTTP %d)', $httpCode);
+            throw new Exception("API error: {$message}");
+        }
+
+        $data = $resp['data'] ?? [];
+        return is_array($data) ? $data : [];
+    } catch (Exception $err) {
+        echo "❌ Error listing agents: " . $err->getMessage() . "\n";
         throw $err;
     }
 }
@@ -266,6 +304,7 @@ class ChatCLI {
     private $historyId = null;
     private $agentId = CODEER_DEFAULT_AGENT;
     private $isTyping = false;
+    private $agents = [];
     
     /**
      * Print welcome message and instructions
@@ -275,10 +314,118 @@ class ChatCLI {
         echo "💬 Codeer AI Chat - PHP CLI\n";
         echo str_repeat("=", 60) . "\n";
         echo "\nCommands:\n";
-        echo "  /new  - Start a new chat session\n";
-        echo "  /quit - Exit the application\n";
+        echo "  /new             - Start a new chat session\n";
+        echo "  /agents          - List published agents\n";
+        echo "  /agent <id|#>    - Change active agent (before /new)\n";
+        echo "  /quit            - Exit the application\n";
+        $currentAgent = $this->agentId ?: 'Workspace default';
+        echo "\nCurrent agent: {$currentAgent}\n";
         echo "\nType your message and press Enter to chat.\n";
         echo str_repeat("=", 60) . "\n\n";
+    }
+
+    /**
+     * Fetch and print available published agents
+     */
+    public function listAgents() {
+        try {
+            $agents = listPublishedAgents();
+            $this->agents = $agents;
+
+            if (empty($agents)) {
+                echo "\n📚 No published agents found.\n\n";
+                return;
+            }
+
+            echo "\n📚 Published agents:\n";
+            $index = 1;
+            foreach ($agents as $agent) {
+                $agentIdValue = isset($agent['id']) ? (string)$agent['id'] : '';
+                $name = isset($agent['name']) && $agent['name'] !== '' ? $agent['name'] : 'Unnamed agent';
+                $description = isset($agent['description']) ? (string)$agent['description'] : '';
+                $isCurrent = $agentIdValue !== '' && $agentIdValue === $this->agentId;
+                $marker = $isCurrent ? ' (current)' : '';
+                echo sprintf("  %d. %s%s\n", $index, $name, $marker);
+                echo "     ID: {$agentIdValue}\n";
+                if ($description !== '') {
+                    echo "     {$description}\n";
+                }
+                $index++;
+            }
+            echo "\n";
+        } catch (Exception $err) {
+            echo "\n❌ Failed to list agents: " . $err->getMessage() . "\n\n";
+        }
+    }
+
+    /**
+     * Change the active agent using an index from /agents
+     * or a full/partial agent ID. Only allowed when there
+     * is no active chat history.
+     *
+     * @param string $agentSpec
+     */
+    public function changeAgent($agentSpec) {
+        if ($this->historyId !== null) {
+            echo "\n⚠️  You already have an active chat. Use /new to start a new chat before changing agent.\n\n";
+            return;
+        }
+
+        $agentSpec = trim($agentSpec);
+        if ($agentSpec === '') {
+            echo "\nUsage: /agent <id|#>\n  - Use /agents to see available agents.\n\n";
+            return;
+        }
+
+        if (empty($this->agents)) {
+            // Load agents if not already loaded
+            $this->listAgents();
+            if (empty($this->agents)) {
+                return;
+            }
+        }
+
+        $selectedAgent = null;
+
+        // Try numeric index
+        if (ctype_digit($agentSpec)) {
+            $index = (int)$agentSpec - 1;
+            if ($index >= 0 && $index < count($this->agents)) {
+                $selectedAgent = $this->agents[$index];
+            } else {
+                echo "\n❌ Invalid agent index: {$agentSpec}\n\n";
+                return;
+            }
+        } else {
+            // Match by full or prefix of ID
+            foreach ($this->agents as $agent) {
+                $agentIdValue = isset($agent['id']) ? (string)$agent['id'] : '';
+                if ($agentIdValue === $agentSpec || strpos($agentIdValue, $agentSpec) === 0) {
+                    $selectedAgent = $agent;
+                    break;
+                }
+            }
+
+            if ($selectedAgent === null) {
+                echo "\n❌ Agent not found. Use /agents to see available agents and provide an index or full ID.\n\n";
+                return;
+            }
+        }
+
+        $newAgentId = isset($selectedAgent['id']) ? (string)$selectedAgent['id'] : '';
+        if ($newAgentId === '') {
+            echo "\n❌ Selected agent has no valid ID.\n\n";
+            return;
+        }
+
+        if ($newAgentId === $this->agentId) {
+            echo "\nℹ️  Selected agent is already active.\n\n";
+            return;
+        }
+
+        $this->agentId = $newAgentId;
+        $name = isset($selectedAgent['name']) && $selectedAgent['name'] !== '' ? $selectedAgent['name'] : 'Unnamed agent';
+        echo "\n✅ Active agent changed to: {$name} ({$this->agentId})\n\n";
     }
     
     /**
@@ -289,7 +436,7 @@ class ChatCLI {
      */
     public function createNewChat($name = 'Untitled') {
         try {
-            $chatData = createChat(substr($name, 0, 256));
+            $chatData = createChat(substr($name, 0, 256), $this->agentId);
             $this->historyId = $chatData['id'];
             echo "🆕 Chat created with ID: {$this->historyId}\n\n";
         } catch (Exception $e) {
@@ -392,6 +539,18 @@ class ChatCLI {
                 if ($userInput === '/new') {
                     $this->historyId = null;
                     echo "\n🔄 Starting new chat session...\n\n";
+                    continue;
+                }
+
+                if ($userInput === '/agents') {
+                    $this->listAgents();
+                    continue;
+                }
+
+                if (strpos($userInput, '/agent') === 0) {
+                    $parts = preg_split('/\s+/', $userInput, 2);
+                    $arg = isset($parts[1]) ? trim($parts[1]) : '';
+                    $this->changeAgent($arg);
                     continue;
                 }
                 

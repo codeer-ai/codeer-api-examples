@@ -48,7 +48,7 @@ CODEER_DEFAULT_AGENT = None  # Optional: Set agent UUID or None for default agen
 # API Functions
 # ============================================
 
-def create_chat(name: str = "Untitled") -> dict:
+def create_chat(name: str = "Untitled", agent_id: Optional[str] = None) -> dict:
     """
     Create a new chat session
     Returns chat object with ID for subsequent messages
@@ -59,8 +59,10 @@ def create_chat(name: str = "Untitled") -> dict:
         body = {
             "name": name,
         }
-        if CODEER_DEFAULT_AGENT:
-            body["agent_id"] = CODEER_DEFAULT_AGENT
+
+        effective_agent_id = agent_id or CODEER_DEFAULT_AGENT
+        if effective_agent_id:
+            body["agent_id"] = effective_agent_id
 
         response = requests.post(
             api_url,
@@ -88,6 +90,41 @@ def create_chat(name: str = "Untitled") -> dict:
         return resp["data"]
     except Exception as err:
         print(f"❌ Error creating chat: {err}")
+        raise
+
+
+def list_published_agents():
+    """
+    List published agents for this workspace.
+    Returns a list of agent dicts.
+    """
+    try:
+        api_url = f"{CODEER_API_ROOT}/api/v1/chats/published-agents"
+
+        response = requests.get(
+            api_url,
+            headers={
+                "x-api-key": CODEER_API_KEY,
+            },
+        )
+
+        try:
+            resp = response.json()
+        except Exception:
+            resp = None
+
+        if not response.ok or not resp or resp.get("error_code") != 0:
+            message = None
+            if isinstance(resp, dict):
+                message = resp.get("message") or resp.get("error")
+            if not message:
+                message = f"Failed to list agents (HTTP {response.status_code})"
+            raise Exception(f"API error: {message}")
+
+        data = resp.get("data") or []
+        return data
+    except Exception as err:
+        print(f"❌ Error listing agents: {err}")
         raise
 
 
@@ -281,6 +318,7 @@ class ChatCLI:
         self.history_id = None
         self.agent_id = CODEER_DEFAULT_AGENT
         self.is_typing = False
+        self.agents = []
     
     def print_welcome(self):
         """Print welcome message and instructions"""
@@ -288,15 +326,108 @@ class ChatCLI:
         print("💬 Codeer AI Chat - Python CLI")
         print("=" * 60)
         print("\nCommands:")
-        print("  /new  - Start a new chat session")
-        print("  /quit - Exit the application")
+        print("  /new             - Start a new chat session")
+        print("  /agents          - List published agents")
+        print("  /agent <id|#>    - Change active agent (before /new)")
+        print("  /quit            - Exit the application")
+        current_agent = self.agent_id or "Workspace default"
+        print(f"\nCurrent agent: {current_agent}")
         print("\nType your message and press Enter to chat.")
         print("=" * 60 + "\n")
+
+    def list_agents(self):
+        """Fetch and print available published agents"""
+        try:
+            agents = list_published_agents()
+            self.agents = agents
+
+            if not agents:
+                print("\n📚 No published agents found.\n")
+                return
+
+            print("\n📚 Published agents:")
+            for index, agent in enumerate(agents, start=1):
+                agent_id_value = agent.get("id") or ""
+                name = agent.get("name") or "Unnamed agent"
+                description = agent.get("description") or ""
+                is_current = agent_id_value == self.agent_id
+                marker = " (current)" if is_current else ""
+                print(f"  {index}. {name}{marker}")
+                print(f"     ID: {agent_id_value}")
+                if description:
+                    print(f"     {description}")
+            print("")
+        except Exception as err:
+            print(f"\n❌ Failed to list agents: {err}\n")
+
+    def change_agent(self, agent_spec: str):
+        """
+        Change the active agent using an index from /agents
+        or a full/partial agent ID. Only allowed when there
+        is no active chat history.
+        """
+        if self.history_id is not None:
+            print(
+                "\n⚠️  You already have an active chat."
+                " Use /new to start a new chat before changing agent.\n"
+            )
+            return
+
+        if not agent_spec:
+            print("\nUsage: /agent <id|#>\n  - Use /agents to see available agents.\n")
+            return
+
+        if not self.agents:
+            # Load agents if not already loaded
+            self.list_agents()
+            if not self.agents:
+                return
+
+        selected_agent = None
+
+        # Try numeric index
+        if agent_spec.isdigit():
+            index = int(agent_spec) - 1
+            if 0 <= index < len(self.agents):
+                selected_agent = self.agents[index]
+            else:
+                print(f"\n❌ Invalid agent index: {agent_spec}\n")
+                return
+        else:
+            # Match by full or prefix of ID
+            for agent in self.agents:
+                agent_id_value = str(agent.get("id") or "")
+                if (
+                    agent_id_value == agent_spec
+                    or agent_id_value.startswith(agent_spec)
+                ):
+                    selected_agent = agent
+                    break
+
+            if selected_agent is None:
+                print(
+                    "\n❌ Agent not found. Use /agents to see available agents "
+                    "and provide an index or full ID.\n"
+                )
+                return
+
+        new_agent_id = selected_agent.get("id")
+        if not new_agent_id:
+            print("\n❌ Selected agent has no valid ID.\n")
+            return
+
+        if new_agent_id == self.agent_id:
+            print("\nℹ️  Selected agent is already active.\n")
+            return
+
+        self.agent_id = new_agent_id
+        name = selected_agent.get("name") or "Unnamed agent"
+        print(f"\n✅ Active agent changed to: {name} ({self.agent_id})\n")
     
     def create_new_chat(self, name: str = "Untitled"):
         """Create a new chat session"""
         try:
-            chat_data = create_chat(name[:256])
+            chat_data = create_chat(name[:256], self.agent_id)
             self.history_id = chat_data["id"]
             print(f"🆕 Chat created with ID: {self.history_id}\n")
         except Exception as e:
@@ -366,6 +497,18 @@ class ChatCLI:
                 if user_input == "/new":
                     self.history_id = None
                     print("\n🔄 Starting new chat session...\n")
+                    continue
+
+                if user_input == "/agents":
+                    self.list_agents()
+                    continue
+
+                if user_input.startswith("/agent"):
+                    parts = user_input.split(maxsplit=1)
+                    if len(parts) == 1:
+                        self.change_agent("")
+                    else:
+                        self.change_agent(parts[1].strip())
                     continue
                 
                 # Send message
