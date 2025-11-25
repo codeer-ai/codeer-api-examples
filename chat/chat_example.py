@@ -128,6 +128,100 @@ def list_published_agents():
         raise
 
 
+def list_chats(
+    limit: int = 10,
+    offset: int = 0,
+    order_by: str = "-created_at",
+    agent_id: Optional[str] = None,
+    external_user_id: Optional[str] = None,
+):
+    """
+    List chat histories (most recent first by default).
+    Returns a list of chat dicts.
+    """
+    try:
+        api_url = f"{CODEER_API_ROOT}/api/v1/chats"
+
+        params = {
+            "limit": limit,
+            "offset": offset,
+            "order_by": order_by,
+        }
+
+        if agent_id:
+            params["agent_id"] = agent_id
+        if external_user_id:
+            params["external_user_id"] = external_user_id
+
+        response = requests.get(
+            api_url,
+            headers={
+                "x-api-key": CODEER_API_KEY,
+            },
+            params=params,
+        )
+
+        try:
+            resp = response.json()
+        except Exception:
+            resp = None
+
+        if not response.ok or not resp or resp.get("error_code") != 0:
+            message = None
+            if isinstance(resp, dict):
+                message = resp.get("message") or resp.get("error")
+            if not message:
+                message = f"Failed to list chats (HTTP {response.status_code})"
+            raise Exception(f"API error: {message}")
+
+        data = resp.get("data") or []
+        return data
+    except Exception as err:
+        print(f"❌ Error listing chats: {err}")
+        raise
+
+
+def list_chat_messages(chat_id: int, limit: int = 1000, offset: int = 0):
+    """
+    List messages for a given chat_id.
+    Returns a list of message dicts ordered oldest → newest.
+    """
+    try:
+        api_url = f"{CODEER_API_ROOT}/api/v1/chats/{chat_id}/messages"
+
+        params = {
+            "limit": limit,
+            "offset": offset,
+        }
+
+        response = requests.get(
+            api_url,
+            headers={
+                "x-api-key": CODEER_API_KEY,
+            },
+            params=params,
+        )
+
+        try:
+            resp = response.json()
+        except Exception:
+            resp = None
+
+        if not response.ok or not resp or resp.get("error_code") != 0:
+            message = None
+            if isinstance(resp, dict):
+                message = resp.get("message") or resp.get("error")
+            if not message:
+                message = f"Failed to list chat messages (HTTP {response.status_code})"
+            raise Exception(f"API error: {message}")
+
+        data = resp.get("data") or []
+        return data
+    except Exception as err:
+        print(f"❌ Error listing chat messages: {err}")
+        raise
+
+
 def send_question(
     chat_id: int,
     payload: dict,
@@ -319,6 +413,7 @@ class ChatCLI:
         self.agent_id = CODEER_DEFAULT_AGENT
         self.is_typing = False
         self.agents = []
+        self.chats = []
     
     def print_welcome(self):
         """Print welcome message and instructions"""
@@ -329,6 +424,8 @@ class ChatCLI:
         print("  /new             - Start a new chat session")
         print("  /agents          - List published agents")
         print("  /agent <id|#>    - Change active agent (before /new)")
+        print("  /chats           - List recent chat histories")
+        print("  /open <id|#>     - Load and show a chat history")
         print("  /quit            - Exit the application")
         current_agent = self.agent_id or "Workspace default"
         print(f"\nCurrent agent: {current_agent}")
@@ -423,6 +520,137 @@ class ChatCLI:
         self.agent_id = new_agent_id
         name = selected_agent.get("name") or "Unnamed agent"
         print(f"\n✅ Active agent changed to: {name} ({self.agent_id})\n")
+
+    def list_recent_chats(self, limit: int = 10):
+        """
+        Fetch and print recent chat histories.
+        """
+        try:
+            chats = list_chats(limit=limit)
+            self.chats = chats
+
+            if not chats:
+                print("\n📁 No chat histories found.\n")
+                return
+
+            print("\n📁 Recent chats:")
+            for index, chat in enumerate(chats, start=1):
+                chat_id_value = chat.get("id")
+                name = chat.get("name") or "Untitled"
+                created_at = chat.get("created_at") or ""
+                updated_at = chat.get("updated_at") or ""
+                external_user_id = chat.get("external_user_id") or ""
+                meta = chat.get("meta") or {}
+                agent_from_meta = meta.get("conversation_agent_id") or ""
+
+                is_current = chat_id_value == self.chat_id
+                marker = " (current)" if is_current else ""
+
+                print(f"  {index}. ID: {chat_id_value}{marker}")
+                print(f"     Name: {name}")
+                if created_at or updated_at:
+                    print(f"     Created: {created_at} | Updated: {updated_at}")
+                if external_user_id:
+                    print(f"     External user: {external_user_id}")
+                if agent_from_meta:
+                    print(f"     Agent: {agent_from_meta}")
+            print("")
+        except Exception as err:
+            print(f"\n❌ Failed to list chats: {err}\n")
+
+    def open_chat(self, chat_spec: str):
+        """
+        Load an existing chat by index from /chats
+        or by chat ID, then print its history and
+        make it the active chat.
+        """
+        if not chat_spec:
+            print(
+                "\nUsage: /open <id|#>\n"
+                "  - Use /chats to see available chats first.\n"
+            )
+            return
+
+        if not self.chats:
+            # Load chats if not already loaded
+            self.list_recent_chats()
+            if not self.chats:
+                return
+
+        selected_chat = None
+
+        # Try numeric index
+        if chat_spec.isdigit():
+            index = int(chat_spec) - 1
+            if 0 <= index < len(self.chats):
+                selected_chat = self.chats[index]
+            else:
+                print(f"\n❌ Invalid chat index: {chat_spec}\n")
+                return
+        else:
+            # Match by full or prefix of chat ID
+            for chat in self.chats:
+                chat_id_value = str(chat.get("id") or "")
+                if chat_id_value == chat_spec or chat_id_value.startswith(chat_spec):
+                    selected_chat = chat
+                    break
+
+            if selected_chat is None:
+                print(
+                    "\n❌ Chat not found. Use /chats to see available chats "
+                    "and provide an index or full ID.\n"
+                )
+                return
+
+        chat_id_value = selected_chat.get("id")
+        if not chat_id_value:
+            print("\n❌ Selected chat has no valid ID.\n")
+            return
+
+        self.chat_id = chat_id_value
+
+        meta = selected_chat.get("meta") or {}
+        agent_from_meta = meta.get("conversation_agent_id")
+        if agent_from_meta:
+            self.agent_id = agent_from_meta
+
+        chat_name = selected_chat.get("name") or "Untitled"
+        print(f"\n📜 Loaded chat {self.chat_id}: {chat_name}\n")
+
+        try:
+            messages = list_chat_messages(self.chat_id, limit=1000, offset=0)
+        except Exception as err:
+            print(f"❌ Failed to load chat messages: {err}\n")
+            return
+
+        if not messages:
+            print("ℹ️  This chat has no messages yet.\n")
+            return
+
+        role_labels = {
+            "system": "System",
+            "user": "You",
+            "assistant": "Assistant",
+        }
+
+        print("—— Chat History ———————————————")
+        for message in messages:
+            role = (message.get("role") or "").lower()
+            content = message.get("content") or ""
+            label = role_labels.get(role, role.capitalize() or "Message")
+
+            lines = content.splitlines() or [""]
+            if not lines:
+                print(f"{label}:")
+                continue
+
+            print(f"{label}: {lines[0]}")
+            for line in lines[1:]:
+                print(f"    {line}")
+            print("")
+
+        print("—— End of History ———————————\n")
+        print("You can now continue chatting in this thread.\n")
     
     def create_new_chat(self, name: str = "Untitled"):
         """Create a new chat session"""
@@ -499,6 +727,10 @@ class ChatCLI:
                     print("\n🔄 Starting new chat session...\n")
                     continue
 
+                if user_input in ("/chats", "/history"):
+                    self.list_recent_chats(limit=10)
+                    continue
+
                 if user_input == "/agents":
                     self.list_agents()
                     continue
@@ -509,6 +741,14 @@ class ChatCLI:
                         self.change_agent("")
                     else:
                         self.change_agent(parts[1].strip())
+                    continue
+
+                if user_input.startswith("/open"):
+                    parts = user_input.split(maxsplit=1)
+                    if len(parts) == 1:
+                        self.open_chat("")
+                    else:
+                        self.open_chat(parts[1].strip())
                     continue
                 
                 # Send message
