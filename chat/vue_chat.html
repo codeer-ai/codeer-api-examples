@@ -518,6 +518,26 @@
         </h1>
         <div class="header-controls">
           <div class="agent-select-wrapper">
+            <span class="agent-select-label">Chat</span>
+            <select
+              class="agent-select"
+              v-model="selectedChatId"
+              @change="handleChatSelectChange"
+              :disabled="isTyping || isUploading || isCreatingChat"
+            >
+              <option value="">
+                {{ isLoadingChats ? "Loading..." : "Recent chats" }}
+              </option>
+              <option
+                v-for="chat in recentChats"
+                :key="chat.id"
+                :value="chat.id"
+              >
+                {{ chat.name || ("Chat " + chat.id) }}
+              </option>
+            </select>
+          </div>
+          <div class="agent-select-wrapper">
             <span class="agent-select-label">Agent</span>
             <select
               class="agent-select"
@@ -820,6 +840,87 @@
       }
 
       /**
+       * List chats (for history selector)
+       * Returns latest chats ordered by created_at desc
+       */
+      async function listChats(limit = 15) {
+        try {
+          const params = new URLSearchParams();
+          if (limit) {
+            params.append("limit", String(limit));
+          }
+          params.append("offset", "0");
+          params.append("order_by", "-created_at");
+
+          const apiUrl = `${CODEER_API_ROOT}/api/v1/chats?${params.toString()}`;
+
+          const response = await fetch(apiUrl, {
+            method: "GET",
+            headers: {
+              "x-api-key": CODEER_API_KEY,
+            },
+          });
+
+          const resp = await response.json().catch(() => null);
+          if (!response.ok || !resp || resp.error_code !== 0) {
+            const message =
+              (resp && (resp.message || resp.error)) ||
+              `Failed to list chats (HTTP ${response.status})`;
+            throw new Error(`API error: ${message}`);
+          }
+
+          console.log("💾 Recent chats:", resp.data);
+          return resp.data || [];
+        } catch (err) {
+          console.error("❌ Error listing chats:", err);
+          throw err;
+        }
+      }
+
+      /**
+       * List messages for a given chat
+       * Used to reconstruct history when selecting an existing chat
+       */
+      async function listChatMessages(chatId, options = {}) {
+        if (!chatId) {
+          throw new Error("chatId is required to list messages");
+        }
+
+        const { limit = 100, offset = 0 } = options;
+
+        try {
+          const params = new URLSearchParams();
+          if (limit) {
+            params.append("limit", String(limit));
+          }
+          params.append("offset", String(offset));
+
+          const apiUrl = `${CODEER_API_ROOT}/api/v1/chats/${chatId}/messages?${params.toString()}`;
+
+          const response = await fetch(apiUrl, {
+            method: "GET",
+            headers: {
+              "x-api-key": CODEER_API_KEY,
+            },
+          });
+
+          const resp = await response.json().catch(() => null);
+          if (!response.ok || !resp || resp.error_code !== 0) {
+            const message =
+              (resp && (resp.message || resp.error)) ||
+              `Failed to list chat messages (HTTP ${response.status})`;
+            throw new Error(`API error: ${message}`);
+          }
+
+          console.log(`💬 Messages for chat ${chatId}:`, resp.data);
+          return resp.data || [];
+        } catch (err) {
+          console.error("❌ Error listing chat messages:", err);
+          throw err;
+        }
+      }
+
+      /**
        * Send a message and receive streaming response via Server-Sent Events (SSE)
        * @param {string} chatId - Chat session ID from createChat()
        * @param {Object} payload - { message: string, stream: boolean, agent_id?: number }
@@ -1106,9 +1207,27 @@
             isUploading: false,
             uploadError: "",
             reasoningStepsByMessage: {},
+            recentChats: [],
+            isLoadingChats: false,
+            chatsError: "",
+            selectedChatId: "",
           };
         },
         methods: {
+          async loadRecentChats() {
+            this.isLoadingChats = true;
+            this.chatsError = "";
+            try {
+              const chats = await listChats(15);
+              this.recentChats = chats;
+            } catch (error) {
+              console.error("Failed to load chats:", error);
+              this.chatsError = error.message || "Failed to load chats";
+            } finally {
+              this.isLoadingChats = false;
+            }
+          },
+
           handleUploadClick() {
             const input = this.$refs.fileInput;
             if (input) input.click();
@@ -1206,6 +1325,134 @@
             this.uploadError = "";
 
             await this.sendMessageWithAPI(input, attachmentsForSend);
+          },
+
+          async handleChatSelectChange(event) {
+            const value = event.target.value;
+            this.selectedChatId = value;
+
+            if (!value) return;
+
+            const chatId = parseInt(value, 10);
+            if (!chatId || Number.isNaN(chatId)) return;
+
+            this.isTyping = false;
+            this.currentAssistantMessageId = null;
+            this.isLoadingChats = true;
+            this.chatsError = "";
+
+            try {
+              const apiMessages = await listChatMessages(chatId, {
+                limit: 200,
+                offset: 0,
+              });
+
+              const messagesList = apiMessages || [];
+
+              const normalized = messagesList
+                .filter(
+                  (msg) => msg.role === "user" || msg.role === "assistant"
+                )
+                .map((msg) => {
+                  const attachedFiles = msg.attached_files || [];
+                  const attachments = attachedFiles.map((file, index) => ({
+                    uuid:
+                      file.id ||
+                      file.uuid ||
+                      `${file.name || "attachment"}-${index}`,
+                    name:
+                      file.name ||
+                      file.original_name ||
+                      file.file_name ||
+                      "Attachment",
+                  }));
+
+                  return {
+                    id: msg.id,
+                    role: msg.role,
+                    content: msg.content || "",
+                    attachments,
+                  };
+                });
+
+              const groups = {};
+
+              messagesList.forEach((msg) => {
+                const groupId = msg.group_id || `msg-${msg.id}`;
+                if (!groups[groupId]) {
+                  groups[groupId] = {
+                    messages: [],
+                    steps: [],
+                  };
+                }
+                groups[groupId].messages.push(msg);
+
+                const meta = msg.meta || {};
+                const rawSteps =
+                  Array.isArray(meta.reasoning_steps) &&
+                  meta.reasoning_steps.length > 0
+                    ? meta.reasoning_steps
+                    : [];
+
+                rawSteps.forEach((step, stepIndex) => {
+                  groups[groupId].steps.push({
+                    id: step.id || `step-${stepIndex + 1}`,
+                    type: step.type || "",
+                    content: step.content || "",
+                    status: "completed",
+                    args: step.args || null,
+                    result: step.result || null,
+                    tokenUsage: step.token_usage || undefined,
+                  });
+                });
+              });
+
+              const newStepsByMessage = {};
+
+              Object.values(groups).forEach((group) => {
+                if (!group.steps.length) return;
+                const assistantMessage =
+                  group.messages.find((m) => m.role === "assistant") || null;
+                if (!assistantMessage) return;
+
+                const targetId = assistantMessage.id;
+                if (newStepsByMessage[targetId]) {
+                  newStepsByMessage[targetId] = [
+                    ...newStepsByMessage[targetId],
+                    ...group.steps,
+                  ];
+                } else {
+                  newStepsByMessage[targetId] = group.steps;
+                }
+              });
+
+              this.messages = normalized;
+              this.reasoningStepsByMessage = newStepsByMessage;
+              this.chatId = chatId;
+              this.hasHistory = normalized.length > 0;
+              this.attachments = [];
+              this.uploadError = "";
+
+              const matchedChat = this.recentChats.find(
+                (c) => c.id === chatId
+              );
+              const conversationAgentId =
+                matchedChat &&
+                matchedChat.meta &&
+                matchedChat.meta.conversation_agent_id;
+              if (conversationAgentId) {
+                this.selectedAgentId = conversationAgentId;
+                this.agentId = conversationAgentId;
+              }
+
+              this.scrollToBottom();
+            } catch (error) {
+              console.error("Failed to load chat messages:", error);
+              this.chatsError =
+                error.message || "Failed to load chat messages";
+            } finally {
+              this.isLoadingChats = false;
+            }
           },
 
           async sendMessageWithAPI(message, attachmentsForSend = []) {
@@ -1348,6 +1595,13 @@
               );
               this.chatId = newChat.id;
               this.hasHistory = true;
+              this.selectedChatId = String(newChat.id);
+              try {
+                const chats = await listChats(15);
+                this.recentChats = chats;
+              } catch (error) {
+                console.error("Failed to refresh recent chats:", error);
+              }
               console.log(`🆕 Chat created with ID: ${newChat.id}`);
             } finally {
               this.isCreatingChat = false;
@@ -1372,7 +1626,11 @@
             const text = message.content || "";
 
             if (!stepsForMessage.length) {
-              return [{ kind: "text", text }];
+              const cleanedText = text.replace(
+                /<tool\s+id=[^>]*>[\s\S]*?<\/tool>/g,
+                ""
+              );
+              return [{ kind: "text", text: cleanedText }];
             }
 
             const parts = [];
@@ -1406,10 +1664,13 @@
               }
 
               if (!matchedStep) {
-                parts.push({
-                  kind: "text",
-                  text: text.slice(matchStart, matchEnd),
-                });
+                const innerText = (inner || "").trim();
+                if (innerText) {
+                  parts.push({
+                    kind: "text",
+                    text: innerText,
+                  });
+                }
               } else {
                 parts.push({
                   kind: "step",
@@ -1453,6 +1714,10 @@
               this.agentId = value || "";
             }
           );
+
+          this.loadRecentChats().catch((error) => {
+            console.error("Failed to load chats:", error);
+          });
 
           this.loadAgents().catch((error) => {
             console.error("Failed to load agents:", error);

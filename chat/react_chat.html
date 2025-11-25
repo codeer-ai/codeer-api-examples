@@ -629,6 +629,87 @@
       }
 
       /**
+       * List chats (for history selector)
+       * Returns latest chats ordered by created_at desc
+       */
+      async function listChats(limit = 15) {
+        try {
+          const params = new URLSearchParams();
+          if (limit) {
+            params.append("limit", String(limit));
+          }
+          params.append("offset", "0");
+          params.append("order_by", "-created_at");
+
+          const apiUrl = `${CODEER_API_ROOT}/api/v1/chats?${params.toString()}`;
+
+          const response = await fetch(apiUrl, {
+            method: "GET",
+            headers: {
+              "x-api-key": CODEER_API_KEY,
+            },
+          });
+
+          const resp = await response.json().catch(() => null);
+          if (!response.ok || !resp || resp.error_code !== 0) {
+            const message =
+              (resp && (resp.message || resp.error)) ||
+              `Failed to list chats (HTTP ${response.status})`;
+            throw new Error(`API error: ${message}`);
+          }
+
+          console.log("💾 Recent chats:", resp.data);
+          return resp.data || [];
+        } catch (err) {
+          console.error("❌ Error listing chats:", err);
+          throw err;
+        }
+      }
+
+      /**
+       * List messages for a given chat
+       * Used to reconstruct history when selecting an existing chat
+       */
+      async function listChatMessages(chatId, options = {}) {
+        if (!chatId) {
+          throw new Error("chatId is required to list messages");
+        }
+
+        const { limit = 100, offset = 0 } = options;
+
+        try {
+          const params = new URLSearchParams();
+          if (limit) {
+            params.append("limit", String(limit));
+          }
+          params.append("offset", String(offset));
+
+          const apiUrl = `${CODEER_API_ROOT}/api/v1/chats/${chatId}/messages?${params.toString()}`;
+
+          const response = await fetch(apiUrl, {
+            method: "GET",
+            headers: {
+              "x-api-key": CODEER_API_KEY,
+            },
+          });
+
+          const resp = await response.json().catch(() => null);
+          if (!response.ok || !resp || resp.error_code !== 0) {
+            const message =
+              (resp && (resp.message || resp.error)) ||
+              `Failed to list chat messages (HTTP ${response.status})`;
+            throw new Error(`API error: ${message}`);
+          }
+
+          console.log(`💬 Messages for chat ${chatId}:`, resp.data);
+          return resp.data || [];
+        } catch (err) {
+          console.error("❌ Error listing chat messages:", err);
+          throw err;
+        }
+      }
+
+      /**
        * Send a message and receive streaming response via Server-Sent Events (SSE)
        * @param {string} chatId - Chat session ID from createChat()
        * @param {Object} payload - { message: string, stream: boolean, agent_id?: number }
@@ -916,6 +997,10 @@
           CODEER_DEFAULT_AGENT || ""
         );
         const [hasHistory, setHasHistory] = useState(false);
+        const [recentChats, setRecentChats] = useState([]);
+        const [isLoadingChats, setIsLoadingChats] = useState(false);
+        const [chatsError, setChatsError] = useState("");
+        const [selectedChatId, setSelectedChatId] = useState("");
 
         const messagesContainerRef = useRef(null);
         const textareaRef = useRef(null);
@@ -933,9 +1018,13 @@
             ) : null;
 
           if (stepsForMessage.length === 0) {
+            const cleanedText = text.replace(
+              /<tool\s+id=[^>]*>[\s\S]*?<\/tool>/g,
+              ""
+            );
             return (
               <>
-                {text}
+                {cleanedText}
                 {cursor}
               </>
             );
@@ -965,8 +1054,11 @@
               );
 
             if (!matchedStep) {
-              // If we cannot match, keep the raw tag text
-              parts.push(text.slice(matchStart, matchEnd));
+              // If we cannot match, drop the tool tag text (optionally keep inner text)
+              const innerText = (inner || "").trim();
+              if (innerText) {
+                parts.push(innerText);
+              }
             } else {
               parts.push(
                 <div
@@ -1032,6 +1124,34 @@
 
         useEffect(() => {
           console.log("🚀 Codeer Chat initialized");
+        }, []);
+
+        useEffect(() => {
+          let isMounted = true;
+
+          const loadRecentChats = async () => {
+            setIsLoadingChats(true);
+            setChatsError("");
+            try {
+              const chats = await listChats(15);
+              if (!isMounted) return;
+              setRecentChats(chats);
+            } catch (error) {
+              console.error("Failed to load chats:", error);
+              if (!isMounted) return;
+              setChatsError(error.message || "Failed to load chats");
+            } finally {
+              if (isMounted) {
+                setIsLoadingChats(false);
+              }
+            }
+          };
+
+          loadRecentChats();
+
+          return () => {
+            isMounted = false;
+          };
         }, []);
 
         useEffect(() => {
@@ -1119,6 +1239,132 @@
           setSelectedAgentId(value);
         };
 
+        const handleChatSelectChange = async (e) => {
+          const value = e.target.value;
+          setSelectedChatId(value);
+
+          if (!value) {
+            return;
+          }
+
+          const chatId = parseInt(value, 10);
+          if (!chatId || Number.isNaN(chatId)) {
+            return;
+          }
+
+          setIsTyping(false);
+          setCurrentAssistantMessageId(null);
+          setIsLoadingChats(true);
+          setChatsError("");
+
+          try {
+            const apiMessages = await listChatMessages(chatId, {
+              limit: 200,
+              offset: 0,
+            });
+
+            const messagesList = apiMessages || [];
+
+            const normalized = messagesList
+              .filter(
+                (msg) => msg.role === "user" || msg.role === "assistant"
+              )
+              .map((msg) => {
+                const attachedFiles = msg.attached_files || [];
+                const attachments = attachedFiles.map((file, index) => ({
+                  uuid:
+                    file.id ||
+                    file.uuid ||
+                    `${file.name || "attachment"}-${index}`,
+                  name:
+                    file.name ||
+                    file.original_name ||
+                    file.file_name ||
+                    "Attachment",
+                }));
+
+                return {
+                  id: msg.id,
+                  role: msg.role,
+                  content: msg.content || "",
+                  attachments,
+                };
+              });
+
+            const groups = {};
+
+            messagesList.forEach((msg) => {
+              const groupId = msg.group_id || `msg-${msg.id}`;
+              if (!groups[groupId]) {
+                groups[groupId] = {
+                  messages: [],
+                  steps: [],
+                };
+              }
+              groups[groupId].messages.push(msg);
+
+              const meta = msg.meta || {};
+              const rawSteps =
+                Array.isArray(meta.reasoning_steps) &&
+                meta.reasoning_steps.length > 0
+                  ? meta.reasoning_steps
+                  : [];
+
+              rawSteps.forEach((step, stepIndex) => {
+                groups[groupId].steps.push({
+                  id: step.id || `step-${stepIndex + 1}`,
+                  type: step.type || "",
+                  content: step.content || "",
+                  status: "completed",
+                  args: step.args || null,
+                  result: step.result || null,
+                  tokenUsage: step.token_usage || undefined,
+                });
+              });
+            });
+
+            const newStepsByMessage = {};
+
+            Object.values(groups).forEach((group) => {
+              if (!group.steps.length) return;
+              const assistantMessage =
+                group.messages.find((m) => m.role === "assistant") || null;
+              if (!assistantMessage) return;
+
+              const targetId = assistantMessage.id;
+              if (newStepsByMessage[targetId]) {
+                newStepsByMessage[targetId] = [
+                  ...newStepsByMessage[targetId],
+                  ...group.steps,
+                ];
+              } else {
+                newStepsByMessage[targetId] = group.steps;
+              }
+            });
+
+            setMessages(normalized);
+            setReasoningStepsByMessage(newStepsByMessage);
+            chatIdRef.current = chatId;
+            setHasHistory(normalized.length > 0);
+            setAttachments([]);
+            setUploadError("");
+
+            const matchedChat = recentChats.find((c) => c.id === chatId);
+            const conversationAgentId =
+              matchedChat &&
+              matchedChat.meta &&
+              matchedChat.meta.conversation_agent_id;
+            if (conversationAgentId) {
+              setSelectedAgentId(conversationAgentId);
+            }
+          } catch (error) {
+            console.error("Failed to load chat messages:", error);
+            setChatsError(error.message || "Failed to load chat messages");
+          } finally {
+            setIsLoadingChats(false);
+          }
+        };
+
         const createNewChat = async (name) => {
           if (isCreatingChat) return null;
 
@@ -1130,6 +1376,13 @@
             );
             chatIdRef.current = newChat.id;
             setHasHistory(true);
+            setSelectedChatId(String(newChat.id));
+            try {
+              const chats = await listChats(15);
+              setRecentChats(chats);
+            } catch (error) {
+              console.error("Failed to refresh recent chats:", error);
+            }
             console.log(`🆕 Chat created with ID: ${newChat.id}`);
             return newChat.id;
           } finally {
@@ -1357,6 +1610,24 @@
                 <span>Codeer AI</span>
               </h1>
               <div className="header-controls">
+                <div className="agent-select-wrapper">
+                  <span className="agent-select-label">Chat</span>
+                  <select
+                    className="agent-select"
+                    value={selectedChatId}
+                    onChange={handleChatSelectChange}
+                    disabled={isTyping || isUploading || isCreatingChat}
+                  >
+                    <option value="">
+                      {isLoadingChats ? "Loading..." : "Recent chats"}
+                    </option>
+                    {recentChats.map((chat) => (
+                      <option key={chat.id} value={chat.id}>
+                        {chat.name || `Chat ${chat.id}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 <div className="agent-select-wrapper">
                   <span className="agent-select-label">Agent</span>
                   <select
