@@ -821,14 +821,14 @@
 
       /**
        * Send a message and receive streaming response via Server-Sent Events (SSE)
-       * @param {string} historyId - Chat session ID from createChat()
+       * @param {string} chatId - Chat session ID from createChat()
        * @param {Object} payload - { message: string, stream: boolean, agent_id?: number }
        * @param {Function} onMessage - Called for each chunk of the response
        * @param {Function} onDone - Called when streaming completes
        * @param {Function} onError - Called if an error occurs
        */
       async function sendQuestion(
-        historyId,
+        chatId,
         payload,
         onMessage,
         onDone,
@@ -836,7 +836,7 @@
         onReasoningEvent
       ) {
         try {
-          const apiUrl = `${CODEER_API_ROOT}/api/v1/chats/${historyId}/messages`;
+          const apiUrl = `${CODEER_API_ROOT}/api/v1/chats/${chatId}/messages`;
 
           const response = await fetch(apiUrl, {
             method: "POST",
@@ -1094,7 +1094,7 @@
             isTyping: false,
             nextId: 1,
             currentAssistantMessageId: null,
-            historyId: null, // Chat session ID
+            chatId: null, // Chat session ID
             agentId: CODEER_DEFAULT_AGENT, // Agent ID from configuration
             agents: [],
             isLoadingAgents: false,
@@ -1186,7 +1186,7 @@
             this.scrollToBottom();
             this.isTyping = true;
 
-            if (!this.historyId) {
+            if (!this.chatId) {
               try {
                 await this.createNewChat(input);
               } catch (error) {
@@ -1235,7 +1235,7 @@
 
               let isFirstChunk = true;
               await sendQuestion(
-                this.historyId,
+                this.chatId,
                 payload,
                 (data) => {
                   const messageIndex = this.messages.findIndex(
@@ -1342,20 +1342,20 @@
 
             this.isCreatingChat = true;
             try {
-              const newHistory = await createChat(
+              const newChat = await createChat(
                 name.substring(0, 256),
                 this.agentId || undefined
               );
-              this.historyId = newHistory.id;
+              this.chatId = newChat.id;
               this.hasHistory = true;
-              console.log(`🆕 Chat created with ID: ${newHistory.id}`);
+              console.log(`🆕 Chat created with ID: ${newChat.id}`);
             } finally {
               this.isCreatingChat = false;
             }
           },
 
           async clearChat() {
-            this.historyId = null;
+            this.chatId = null;
             this.hasHistory = false;
             this.messages = [];
             this.userInput = "";

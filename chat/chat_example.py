@@ -129,7 +129,7 @@ def list_published_agents():
 
 
 def send_question(
-    history_id: int,
+    chat_id: int,
     payload: dict,
     on_message: Optional[Callable[[str], None]] = None,
     on_done: Optional[Callable[[], None]] = None,
@@ -139,14 +139,14 @@ def send_question(
     Send a message and receive streaming response via Server-Sent Events (SSE)
     
     Args:
-        history_id: Chat session ID from create_chat()
+        chat_id: Chat session ID from create_chat()
         payload: { "message": str, "stream": bool, "agent_id"?: int }
         on_message: Called for each chunk of the response
         on_done: Called when streaming completes
         on_error: Called if an error occurs
     """
     try:
-        api_url = f"{CODEER_API_ROOT}/api/v1/chats/{history_id}/messages"
+        api_url = f"{CODEER_API_ROOT}/api/v1/chats/{chat_id}/messages"
         
         response = requests.post(
             api_url,
@@ -315,7 +315,7 @@ def send_question(
 
 class ChatCLI:
     def __init__(self):
-        self.history_id = None
+        self.chat_id = None
         self.agent_id = CODEER_DEFAULT_AGENT
         self.is_typing = False
         self.agents = []
@@ -366,7 +366,7 @@ class ChatCLI:
         or a full/partial agent ID. Only allowed when there
         is no active chat history.
         """
-        if self.history_id is not None:
+        if self.chat_id is not None:
             print(
                 "\n⚠️  You already have an active chat."
                 " Use /new to start a new chat before changing agent.\n"
@@ -428,15 +428,15 @@ class ChatCLI:
         """Create a new chat session"""
         try:
             chat_data = create_chat(name[:256], self.agent_id)
-            self.history_id = chat_data["id"]
-            print(f"🆕 Chat created with ID: {self.history_id}\n")
+            self.chat_id = chat_data["id"]
+            print(f"🆕 Chat created with ID: {self.chat_id}\n")
         except Exception as e:
             print(f"❌ Failed to create chat: {e}\n")
             raise
     
     def send_message(self, message: str):
         """Send a message and handle streaming response"""
-        if not self.history_id:
+        if not self.chat_id:
             self.create_new_chat(message[:256])
         
         print("\n🤖 Assistant: ", end="", flush=True)
@@ -464,7 +464,7 @@ class ChatCLI:
         
         try:
             send_question(
-                self.history_id,
+                self.chat_id,
                 {
                     "message": message,
                     "stream": True,
@@ -495,7 +495,7 @@ class ChatCLI:
                     break
                 
                 if user_input == "/new":
-                    self.history_id = None
+                    self.chat_id = None
                     print("\n🔄 Starting new chat session...\n")
                     continue
 

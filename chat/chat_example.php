@@ -119,16 +119,16 @@ function listPublishedAgents() {
 /**
  * Send a message and receive streaming response via Server-Sent Events (SSE)
  *
- * @param int $historyId Chat session ID from createChat()
+ * @param int $chatId Chat session ID from createChat()
  * @param array $payload ['message' => string, 'stream' => bool, 'agent_id' => ?int]
  * @param callable|null $onMessage Called for each chunk of the response
  * @param callable|null $onDone Called when streaming completes
  * @param callable|null $onError Called if an error occurs
  * @throws Exception
  */
-function sendQuestion($historyId, $payload, $onMessage = null, $onDone = null, $onError = null) {
+function sendQuestion($chatId, $payload, $onMessage = null, $onDone = null, $onError = null) {
     try {
-        $apiUrl = CODEER_API_ROOT . "/api/v1/chats/{$historyId}/messages";
+        $apiUrl = CODEER_API_ROOT . "/api/v1/chats/{$chatId}/messages";
         
         $ch = curl_init($apiUrl);
         curl_setopt_array($ch, [
@@ -301,7 +301,7 @@ function sendQuestion($historyId, $payload, $onMessage = null, $onDone = null, $
 // ============================================
 
 class ChatCLI {
-    private $historyId = null;
+    private $chatId = null;
     private $agentId = CODEER_DEFAULT_AGENT;
     private $isTyping = false;
     private $agents = [];
@@ -366,7 +366,7 @@ class ChatCLI {
      * @param string $agentSpec
      */
     public function changeAgent($agentSpec) {
-        if ($this->historyId !== null) {
+        if ($this->chatId !== null) {
             echo "\n⚠️  You already have an active chat. Use /new to start a new chat before changing agent.\n\n";
             return;
         }
@@ -437,8 +437,8 @@ class ChatCLI {
     public function createNewChat($name = 'Untitled') {
         try {
             $chatData = createChat(substr($name, 0, 256), $this->agentId);
-            $this->historyId = $chatData['id'];
-            echo "🆕 Chat created with ID: {$this->historyId}\n\n";
+            $this->chatId = $chatData['id'];
+            echo "🆕 Chat created with ID: {$this->chatId}\n\n";
         } catch (Exception $e) {
             echo "❌ Failed to create chat: " . $e->getMessage() . "\n\n";
             throw $e;
@@ -451,7 +451,7 @@ class ChatCLI {
      * @param string $message User message
      */
     public function sendMessage($message) {
-        if (!$this->historyId) {
+        if (!$this->chatId) {
             $this->createNewChat(substr($message, 0, 256));
         }
         
@@ -485,7 +485,7 @@ class ChatCLI {
         
         try {
             sendQuestion(
-                $this->historyId,
+                $this->chatId,
                 [
                     'message' => $message,
                     'stream' => true,
@@ -537,7 +537,7 @@ class ChatCLI {
                 }
                 
                 if ($userInput === '/new') {
-                    $this->historyId = null;
+                    $this->chatId = null;
                     echo "\n🔄 Starting new chat session...\n\n";
                     continue;
                 }

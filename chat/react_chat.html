@@ -630,7 +630,7 @@
 
       /**
        * Send a message and receive streaming response via Server-Sent Events (SSE)
-       * @param {string} historyId - Chat session ID from createChat()
+       * @param {string} chatId - Chat session ID from createChat()
        * @param {Object} payload - { message: string, stream: boolean, agent_id?: number }
        * @param {Function} onMessage - Called for each output text chunk
        * @param {Function} onDone - Called when streaming completes
@@ -638,7 +638,7 @@
        * @param {Function} onReasoningEvent - Called for reasoning_step start/end events
        */
       async function sendQuestion(
-        historyId,
+        chatId,
         payload,
         onMessage,
         onDone,
@@ -646,7 +646,7 @@
         onReasoningEvent
       ) {
         try {
-          const apiUrl = `${CODEER_API_ROOT}/api/v1/chats/${historyId}/messages`;
+          const apiUrl = `${CODEER_API_ROOT}/api/v1/chats/${chatId}/messages`;
 
           const response = await fetch(apiUrl, {
             method: "POST",
@@ -920,7 +920,7 @@
         const messagesContainerRef = useRef(null);
         const textareaRef = useRef(null);
         const fileInputRef = useRef(null);
-        const historyIdRef = useRef(null);
+        const chatIdRef = useRef(null);
         const agentId = useRef(CODEER_DEFAULT_AGENT || "");
 
         const renderAssistantContent = (message) => {
@@ -1124,14 +1124,14 @@
 
           setIsCreatingChat(true);
           try {
-            const newHistory = await createChat(
+            const newChat = await createChat(
               name.substring(0, 256),
               agentId.current || undefined
             );
-            historyIdRef.current = newHistory.id;
+            chatIdRef.current = newChat.id;
             setHasHistory(true);
-            console.log(`🆕 Chat created with ID: ${newHistory.id}`);
-            return newHistory.id;
+            console.log(`🆕 Chat created with ID: ${newChat.id}`);
+            return newChat.id;
           } finally {
             setIsCreatingChat(false);
           }
@@ -1139,7 +1139,7 @@
 
         const sendMessageWithAPI = async (
           message,
-          chatHistoryId,
+          chatId,
           assistantMessageId,
           attachmentsForSend = []
         ) => {
@@ -1174,7 +1174,7 @@
               return next;
             });
             await sendQuestion(
-              chatHistoryId,
+              chatId,
               payload,
               (data) => {
                 if (isFirstChunk) {
@@ -1288,12 +1288,12 @@
           setUserInput("");
           setIsTyping(true);
 
-          let currentHistoryId = historyIdRef.current;
+          let currentChatId = chatIdRef.current;
 
-          if (!currentHistoryId) {
+          if (!currentChatId) {
             try {
-              currentHistoryId = await createNewChat(input);
-              if (!currentHistoryId) {
+              currentChatId = await createNewChat(input);
+              if (!currentChatId) {
                 setIsTyping(false);
                 return;
               }
@@ -1317,7 +1317,7 @@
 
           await sendMessageWithAPI(
             input,
-            currentHistoryId,
+            currentChatId,
             assistantMessageId,
             attachmentsForSend
           );
@@ -1331,7 +1331,7 @@
         };
 
         const clearChat = () => {
-          historyIdRef.current = null;
+          chatIdRef.current = null;
           setHasHistory(false);
           setMessages([]);
           setUserInput("");
