@@ -61,6 +61,39 @@
         gap: 10px;
       }
 
+      .header-controls {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .agent-select-wrapper {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: #ececf1;
+        font-size: 14px;
+      }
+
+      .agent-select-label {
+        color: #8e8ea0;
+        font-size: 13px;
+      }
+
+      .agent-select {
+        background: #343541;
+        border-radius: 6px;
+        border: 1px solid #565869;
+        color: #ececf1;
+        padding: 6px 8px;
+        font-size: 14px;
+      }
+
+      .agent-select:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+
       .new-chat-btn {
         padding: 8px 16px;
         background: transparent;
@@ -103,6 +136,8 @@
         gap: 16px;
         padding: 20px;
         animation: fadeIn 0.3s ease-in;
+        max-width: 100%;
+        box-sizing: border-box;
       }
 
       @keyframes fadeIn {
@@ -149,6 +184,9 @@
         line-height: 1.6;
         font-size: 16px;
         word-wrap: break-word;
+        max-width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
       }
 
       .typing-indicator {
@@ -322,6 +360,57 @@
         white-space: nowrap;
       }
 
+      .reasoning-steps {
+        margin-top: 8px;
+        padding: 8px 10px;
+        border-radius: 8px;
+        background: #202123;
+        border: 1px solid #565869;
+        color: #8e8ea0;
+        font-size: 13px;
+        max-width: 100%;
+        box-sizing: border-box;
+        overflow-x: hidden;
+      }
+
+      .reasoning-step {
+        display: flex;
+        align-items: flex-start;
+        gap: 6px;
+        margin-bottom: 4px;
+      }
+
+      .reasoning-step:last-child {
+        margin-bottom: 0;
+      }
+
+      .reasoning-step-status {
+        font-size: 14px;
+      }
+
+      .reasoning-step-content {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .reasoning-step-json {
+        margin-top: 4px;
+        padding: 6px 8px;
+        border-radius: 6px;
+        background: #16171c;
+        border: 1px solid #3a3b46;
+        font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+          "Courier New", monospace;
+        font-size: 12px;
+        color: #d0d0d5;
+        max-height: 160px;
+        max-width: 100%;
+        box-sizing: border-box;
+        overflow-x: auto;
+        overflow-y: auto;
+        white-space: pre;
+      }
+
       textarea {
         flex: 1;
         background: transparent;
@@ -469,10 +558,19 @@
        * Create a new chat session
        * Returns chat object with ID for subsequent messages
        */
-      async function createChat(name) {
+      async function createChat(name, agentId) {
         name = name || "Untitled";
         try {
           const apiUrl = `${CODEER_API_ROOT}/api/v1/chats`;
+
+          const body = {
+            name: name,
+          };
+
+          const effectiveAgentId = agentId || CODEER_DEFAULT_AGENT;
+          if (effectiveAgentId) {
+            body.agent_id = effectiveAgentId;
+          }
 
           const response = await fetch(apiUrl, {
             method: "POST",
@@ -480,19 +578,17 @@
               "Content-Type": "application/json",
               "x-api-key": CODEER_API_KEY,
             },
-            body: JSON.stringify({ name: name }),
+            body: JSON.stringify(body),
           });
 
-          if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(
-              `API error: ${errorData.error || "Failed to create chat"} (${
-                response.status
-              })`
-            );
+          const resp = await response.json().catch(() => null);
+          if (!response.ok || !resp || resp.error_code !== 0) {
+            const message =
+              (resp && (resp.message || resp.error)) ||
+              `Failed to create chat (HTTP ${response.status})`;
+            throw new Error(`API error: ${message}`);
           }
 
-          const resp = await response.json();
           console.log("✅ New chat created:", resp);
           return resp.data;
         } catch (err) {
@@ -502,22 +598,136 @@
       }
 
       /**
+       * List published agents for this workspace
+       * Returns an array of agents [{ id, name, description, ... }]
+       */
+      async function listPublishedAgents() {
+        try {
+          const apiUrl = `${CODEER_API_ROOT}/api/v1/chats/published-agents`;
+
+          const response = await fetch(apiUrl, {
+            method: "GET",
+            headers: {
+              "x-api-key": CODEER_API_KEY,
+            },
+          });
+
+          const resp = await response.json().catch(() => null);
+          if (!response.ok || !resp || resp.error_code !== 0) {
+            const message =
+              (resp && (resp.message || resp.error)) ||
+              `Failed to list agents (HTTP ${response.status})`;
+            throw new Error(`API error: ${message}`);
+          }
+
+          console.log("📚 Published agents:", resp.data);
+          return resp.data || [];
+        } catch (err) {
+          console.error("❌ Error listing agents:", err);
+          throw err;
+        }
+      }
+
+      /**
+       * List chats (for history selector)
+       * Returns latest chats ordered by created_at desc
+       */
+      async function listChats(limit = 15) {
+        try {
+          const params = new URLSearchParams();
+          if (limit) {
+            params.append("limit", String(limit));
+          }
+          params.append("offset", "0");
+          params.append("order_by", "-created_at");
+
+          const apiUrl = `${CODEER_API_ROOT}/api/v1/chats?${params.toString()}`;
+
+          const response = await fetch(apiUrl, {
+            method: "GET",
+            headers: {
+              "x-api-key": CODEER_API_KEY,
+            },
+          });
+
+          const resp = await response.json().catch(() => null);
+          if (!response.ok || !resp || resp.error_code !== 0) {
+            const message =
+              (resp && (resp.message || resp.error)) ||
+              `Failed to list chats (HTTP ${response.status})`;
+            throw new Error(`API error: ${message}`);
+          }
+
+          console.log("💾 Recent chats:", resp.data);
+          return resp.data || [];
+        } catch (err) {
+          console.error("❌ Error listing chats:", err);
+          throw err;
+        }
+      }
+
+      /**
+       * List messages for a given chat
+       * Used to reconstruct history when selecting an existing chat
+       */
+      async function listChatMessages(chatId, options = {}) {
+        if (!chatId) {
+          throw new Error("chatId is required to list messages");
+        }
+
+        const { limit = 100, offset = 0 } = options;
+
+        try {
+          const params = new URLSearchParams();
+          if (limit) {
+            params.append("limit", String(limit));
+          }
+          params.append("offset", String(offset));
+
+          const apiUrl = `${CODEER_API_ROOT}/api/v1/chats/${chatId}/messages?${params.toString()}`;
+
+          const response = await fetch(apiUrl, {
+            method: "GET",
+            headers: {
+              "x-api-key": CODEER_API_KEY,
+            },
+          });
+
+          const resp = await response.json().catch(() => null);
+          if (!response.ok || !resp || resp.error_code !== 0) {
+            const message =
+              (resp && (resp.message || resp.error)) ||
+              `Failed to list chat messages (HTTP ${response.status})`;
+            throw new Error(`API error: ${message}`);
+          }
+
+          console.log(`💬 Messages for chat ${chatId}:`, resp.data);
+          return resp.data || [];
+        } catch (err) {
+          console.error("❌ Error listing chat messages:", err);
+          throw err;
+        }
+      }
+
+      /**
        * Send a message and receive streaming response via Server-Sent Events (SSE)
-       * @param {string} historyId - Chat session ID from createChat()
+       * @param {string} chatId - Chat session ID from createChat()
        * @param {Object} payload - { message: string, stream: boolean, agent_id?: number }
-       * @param {Function} onMessage - Called for each chunk of the response
+       * @param {Function} onMessage - Called for each output text chunk
        * @param {Function} onDone - Called when streaming completes
        * @param {Function} onError - Called if an error occurs
+       * @param {Function} onReasoningEvent - Called for reasoning_step start/end events
        */
       async function sendQuestion(
-        historyId,
+        chatId,
         payload,
         onMessage,
         onDone,
-        onError
+        onError,
+        onReasoningEvent
       ) {
         try {
-          const apiUrl = `${CODEER_API_ROOT}/api/v1/chats/${historyId}/messages`;
+          const apiUrl = `${CODEER_API_ROOT}/api/v1/chats/${chatId}/messages`;
 
           const response = await fetch(apiUrl, {
             method: "POST",
@@ -528,11 +738,13 @@
             body: JSON.stringify(payload),
           });
 
+          let errorData = null;
           if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(
-              `API error: ${errorData.error} (${response.status})`
-            );
+            errorData = await response.json().catch(() => null);
+            const message =
+              (errorData && (errorData.message || errorData.error)) ||
+              `HTTP ${response.status}`;
+            throw new Error(`API error: ${message}`);
           }
 
           if (response.body === null) {
@@ -547,14 +759,21 @@
           let eventName = null;
           let dataLines = [];
           let doneCalled = false;
+          let hasOutputText = false;
 
           const dispatchEvent = async () => {
             if (dataLines.length === 0 && !eventName) return false;
 
-            const payload = dataLines.join("\n");
+            const rawPayload = dataLines.join("\n").trim();
             const ev = (eventName || "").toLowerCase();
 
-            if (payload && payload.trim() === "[DONE]") {
+            if (!rawPayload) {
+              eventName = null;
+              dataLines = [];
+              return false;
+            }
+
+            if (rawPayload === "[DONE]") {
               if (onDone && !doneCalled) {
                 onDone();
                 doneCalled = true;
@@ -562,20 +781,74 @@
               return true;
             }
 
-            if (ev === "error") {
-              if (onError) onError(new Error(payload || "Stream error"));
-              if (onDone && !doneCalled) {
-                onDone();
-                doneCalled = true;
-              }
-              return true;
-            }
-
-            if (onMessage && payload.length > 0) {
+            let parsed = null;
+            if (rawPayload.startsWith("{")) {
               try {
-                onMessage(payload);
+                parsed = JSON.parse(rawPayload);
               } catch (e) {
-                console.error("Error processing message:", e);
+                console.error("Failed to parse SSE JSON:", e, rawPayload);
+              }
+            }
+
+            if (
+              parsed &&
+              (parsed.type === "response.reasoning_step.start" ||
+                parsed.type === "response.reasoning_step.end")
+            ) {
+              if (typeof onReasoningEvent === "function") {
+                try {
+                  onReasoningEvent(parsed);
+                } catch (e) {
+                  console.error("Error processing reasoning event:", e);
+                }
+              }
+              eventName = null;
+              dataLines = [];
+              return false;
+            }
+
+            if (ev === "error" || (parsed && parsed.type === "error")) {
+              const message =
+                (parsed && (parsed.message || parsed.error)) ||
+                rawPayload ||
+                "Stream error";
+              if (onError) onError(new Error(message));
+              if (onDone && !doneCalled) {
+                onDone();
+                doneCalled = true;
+              }
+              return true;
+            }
+
+            if (onMessage) {
+              let textChunk = null;
+
+              if (
+                parsed &&
+                parsed.type === "response.output_text.delta" &&
+                typeof parsed.delta === "string"
+              ) {
+                textChunk = parsed.delta;
+                hasOutputText = true;
+              } else if (
+                parsed &&
+                parsed.type === "response.output_text.completed" &&
+                typeof parsed.final_text === "string" &&
+                !hasOutputText
+              ) {
+                // Fallback if no deltas were streamed
+                textChunk = parsed.final_text;
+              } else if (!parsed) {
+                // Legacy plain-text streaming fallback
+                textChunk = rawPayload;
+              }
+
+              if (textChunk && textChunk.length > 0) {
+                try {
+                  onMessage(textChunk);
+                } catch (e) {
+                  console.error("Error processing message:", e);
+                }
               }
             }
 
@@ -715,12 +988,120 @@
         const [attachments, setAttachments] = useState([]);
         const [isUploading, setIsUploading] = useState(false);
         const [uploadError, setUploadError] = useState("");
+        const [reasoningStepsByMessage, setReasoningStepsByMessage] =
+          useState({});
+        const [agents, setAgents] = useState([]);
+        const [isLoadingAgents, setIsLoadingAgents] = useState(false);
+        const [agentsError, setAgentsError] = useState("");
+        const [selectedAgentId, setSelectedAgentId] = useState(
+          CODEER_DEFAULT_AGENT || ""
+        );
+        const [hasHistory, setHasHistory] = useState(false);
+        const [recentChats, setRecentChats] = useState([]);
+        const [isLoadingChats, setIsLoadingChats] = useState(false);
+        const [chatsError, setChatsError] = useState("");
+        const [selectedChatId, setSelectedChatId] = useState("");
 
         const messagesContainerRef = useRef(null);
         const textareaRef = useRef(null);
         const fileInputRef = useRef(null);
-        const historyIdRef = useRef(null);
-        const agentId = useRef(CODEER_DEFAULT_AGENT);
+        const chatIdRef = useRef(null);
+        const agentId = useRef(CODEER_DEFAULT_AGENT || "");
+
+        const renderAssistantContent = (message) => {
+          const stepsForMessage = reasoningStepsByMessage[message.id] || [];
+          const text = message.content || "";
+
+          const cursor =
+            message.id === currentAssistantMessageId && text !== "" ? (
+              <span className="streaming-cursor"></span>
+            ) : null;
+
+          if (stepsForMessage.length === 0) {
+            const cleanedText = text.replace(
+              /<tool\s+id=[^>]*>[\s\S]*?<\/tool>/g,
+              ""
+            );
+            return (
+              <>
+                {cleanedText}
+                {cursor}
+              </>
+            );
+          }
+
+          const parts = [];
+          const toolTagRegex = /<tool\s+id=([^>]+)>([\s\S]*?)<\/tool>/g;
+          let lastIndex = 0;
+          let match;
+
+          while ((match = toolTagRegex.exec(text)) !== null) {
+            const fullMatch = match[0];
+            const matchStart = match.index;
+            const matchEnd = matchStart + fullMatch.length;
+            const idRaw = match[1];
+            const inner = match[2];
+
+            if (matchStart > lastIndex) {
+              parts.push(text.slice(lastIndex, matchStart));
+            }
+
+            const toolId = idRaw.replace(/^["']|["']$/g, "");
+            const matchedStep =
+              stepsForMessage.find((step) => step.id === toolId) ||
+              stepsForMessage.find(
+                (step) => step.type === inner || step.content === inner
+              );
+
+            if (!matchedStep) {
+              // If we cannot match, drop the tool tag text (optionally keep inner text)
+              const innerText = (inner || "").trim();
+              if (innerText) {
+                parts.push(innerText);
+              }
+            } else {
+              parts.push(
+                <div
+                  key={`tool-${message.id}-${toolId}-${matchStart}`}
+                  className="reasoning-steps"
+                >
+                  <div className="reasoning-step">
+                    <span className="reasoning-step-status">
+                      {matchedStep.status === "completed" ? "✅" : "🧠"}
+                    </span>
+                    <span className="reasoning-step-content">
+                      {matchedStep.type
+                        ? `[${matchedStep.type}] (${matchedStep.id}) ${
+                            matchedStep.content || ""
+                          }`
+                        : matchedStep.content || matchedStep.id}
+                      {matchedStep.args && (
+                        <div className="reasoning-step-json">
+                          {JSON.stringify(matchedStep.args, null, 2)}
+                        </div>
+                      )}
+                      {matchedStep.result && (
+                        <div className="reasoning-step-json">
+                          {JSON.stringify(matchedStep.result, null, 2)}
+                        </div>
+                      )}
+                    </span>
+                  </div>
+                </div>
+              );
+            }
+
+            lastIndex = matchEnd;
+          }
+
+          if (lastIndex < text.length) {
+            parts.push(text.slice(lastIndex));
+          }
+
+          parts.push(cursor);
+
+          return parts;
+        };
 
         const scrollToBottom = () => {
           if (messagesContainerRef.current) {
@@ -744,6 +1125,77 @@
         useEffect(() => {
           console.log("🚀 Codeer Chat initialized");
         }, []);
+
+        useEffect(() => {
+          let isMounted = true;
+
+          const loadRecentChats = async () => {
+            setIsLoadingChats(true);
+            setChatsError("");
+            try {
+              const chats = await listChats(15);
+              if (!isMounted) return;
+              setRecentChats(chats);
+            } catch (error) {
+              console.error("Failed to load chats:", error);
+              if (!isMounted) return;
+              setChatsError(error.message || "Failed to load chats");
+            } finally {
+              if (isMounted) {
+                setIsLoadingChats(false);
+              }
+            }
+          };
+
+          loadRecentChats();
+
+          return () => {
+            isMounted = false;
+          };
+        }, []);
+
+        useEffect(() => {
+          let isMounted = true;
+
+          const loadAgents = async () => {
+            setIsLoadingAgents(true);
+            setAgentsError("");
+            try {
+              const list = await listPublishedAgents();
+              if (!isMounted) return;
+
+              setAgents(list);
+
+              let initial = selectedAgentId || agentId.current || "";
+              if (!initial && list && list.length > 0) {
+                initial = list[0].id;
+              }
+
+              setSelectedAgentId(initial);
+              agentId.current = initial || "";
+            } catch (error) {
+              console.error("Failed to load agents:", error);
+              if (!isMounted) return;
+              setAgentsError(error.message || "Failed to load agents");
+              // Keep whatever default we already have
+              agentId.current = selectedAgentId || CODEER_DEFAULT_AGENT || "";
+            } finally {
+              if (isMounted) {
+                setIsLoadingAgents(false);
+              }
+            }
+          };
+
+          loadAgents();
+
+          return () => {
+            isMounted = false;
+          };
+        }, []);
+
+        useEffect(() => {
+          agentId.current = selectedAgentId || "";
+        }, [selectedAgentId]);
 
         const handleUploadClick = () => {
           if (fileInputRef.current) {
@@ -782,15 +1234,157 @@
           setAttachments((prev) => prev.filter((item) => item.uuid !== uuid));
         };
 
+        const handleAgentChange = (e) => {
+          const value = e.target.value || "";
+          setSelectedAgentId(value);
+        };
+
+        const handleChatSelectChange = async (e) => {
+          const value = e.target.value;
+          setSelectedChatId(value);
+
+          if (!value) {
+            return;
+          }
+
+          const chatId = parseInt(value, 10);
+          if (!chatId || Number.isNaN(chatId)) {
+            return;
+          }
+
+          setIsTyping(false);
+          setCurrentAssistantMessageId(null);
+          setIsLoadingChats(true);
+          setChatsError("");
+
+          try {
+            const apiMessages = await listChatMessages(chatId, {
+              limit: 200,
+              offset: 0,
+            });
+
+            const messagesList = apiMessages || [];
+
+            const normalized = messagesList
+              .filter(
+                (msg) => msg.role === "user" || msg.role === "assistant"
+              )
+              .map((msg) => {
+                const attachedFiles = msg.attached_files || [];
+                const attachments = attachedFiles.map((file, index) => ({
+                  uuid:
+                    file.id ||
+                    file.uuid ||
+                    `${file.name || "attachment"}-${index}`,
+                  name:
+                    file.name ||
+                    file.original_name ||
+                    file.file_name ||
+                    "Attachment",
+                }));
+
+                return {
+                  id: msg.id,
+                  role: msg.role,
+                  content: msg.content || "",
+                  attachments,
+                };
+              });
+
+            const groups = {};
+
+            messagesList.forEach((msg) => {
+              const groupId = msg.group_id || `msg-${msg.id}`;
+              if (!groups[groupId]) {
+                groups[groupId] = {
+                  messages: [],
+                  steps: [],
+                };
+              }
+              groups[groupId].messages.push(msg);
+
+              const meta = msg.meta || {};
+              const rawSteps =
+                Array.isArray(meta.reasoning_steps) &&
+                meta.reasoning_steps.length > 0
+                  ? meta.reasoning_steps
+                  : [];
+
+              rawSteps.forEach((step, stepIndex) => {
+                groups[groupId].steps.push({
+                  id: step.id || `step-${stepIndex + 1}`,
+                  type: step.type || "",
+                  content: step.content || "",
+                  status: "completed",
+                  args: step.args || null,
+                  result: step.result || null,
+                  tokenUsage: step.token_usage || undefined,
+                });
+              });
+            });
+
+            const newStepsByMessage = {};
+
+            Object.values(groups).forEach((group) => {
+              if (!group.steps.length) return;
+              const assistantMessage =
+                group.messages.find((m) => m.role === "assistant") || null;
+              if (!assistantMessage) return;
+
+              const targetId = assistantMessage.id;
+              if (newStepsByMessage[targetId]) {
+                newStepsByMessage[targetId] = [
+                  ...newStepsByMessage[targetId],
+                  ...group.steps,
+                ];
+              } else {
+                newStepsByMessage[targetId] = group.steps;
+              }
+            });
+
+            setMessages(normalized);
+            setReasoningStepsByMessage(newStepsByMessage);
+            chatIdRef.current = chatId;
+            setHasHistory(normalized.length > 0);
+            setAttachments([]);
+            setUploadError("");
+
+            const matchedChat = recentChats.find((c) => c.id === chatId);
+            const conversationAgentId =
+              matchedChat &&
+              matchedChat.meta &&
+              matchedChat.meta.conversation_agent_id;
+            if (conversationAgentId) {
+              setSelectedAgentId(conversationAgentId);
+            }
+          } catch (error) {
+            console.error("Failed to load chat messages:", error);
+            setChatsError(error.message || "Failed to load chat messages");
+          } finally {
+            setIsLoadingChats(false);
+          }
+        };
+
         const createNewChat = async (name) => {
           if (isCreatingChat) return null;
 
           setIsCreatingChat(true);
           try {
-            const newHistory = await createChat(name.substring(0, 256));
-            historyIdRef.current = newHistory.id;
-            console.log(`🆕 Chat created with ID: ${newHistory.id}`);
-            return newHistory.id;
+            const newChat = await createChat(
+              name.substring(0, 256),
+              agentId.current || undefined
+            );
+            chatIdRef.current = newChat.id;
+            setHasHistory(true);
+            setSelectedChatId(String(newChat.id));
+            try {
+              const chats = await listChats(15);
+              setRecentChats(chats);
+            } catch (error) {
+              console.error("Failed to refresh recent chats:", error);
+            }
+            console.log(`🆕 Chat created with ID: ${newChat.id}`);
+            return newChat.id;
           } finally {
             setIsCreatingChat(false);
           }
@@ -798,7 +1392,7 @@
 
         const sendMessageWithAPI = async (
           message,
-          chatHistoryId,
+          chatId,
           assistantMessageId,
           attachmentsForSend = []
         ) => {
@@ -826,8 +1420,14 @@
             }
 
             let isFirstChunk = true;
+            // Clear any previous reasoning steps for this assistant message
+            setReasoningStepsByMessage((prev) => {
+              const next = { ...prev };
+              delete next[assistantMessageId];
+              return next;
+            });
             await sendQuestion(
-              chatHistoryId,
+              chatId,
               payload,
               (data) => {
                 if (isFirstChunk) {
@@ -860,6 +1460,56 @@
                 );
                 setIsTyping(false);
                 setCurrentAssistantMessageId(null);
+              },
+              (event) => {
+                if (!event || !event.type || !event.step) return;
+
+                setReasoningStepsByMessage((prev) => {
+                  const existing = prev[assistantMessageId] || [];
+                  if (event.type === "response.reasoning_step.start") {
+                    const step = event.step || {};
+                    const id = step.id || `step-${existing.length + 1}`;
+                    const newStep = {
+                      id,
+                      type: step.type || "",
+                      content: step.content || "",
+                      status: "running",
+                      args: step.args || null,
+                      result: null,
+                    };
+                    return {
+                      ...prev,
+                      [assistantMessageId]: [...existing, newStep],
+                    };
+                  }
+
+                  if (event.type === "response.reasoning_step.end") {
+                    const step = event.step || {};
+                    const id = step.id;
+                    if (!id || existing.length === 0) {
+                      return prev;
+                    }
+                    const updated = existing.map((s) =>
+                      s.id === id
+                        ? {
+                            ...s,
+                            status: "completed",
+                            result:
+                              (event.step && event.step.result) || s.result,
+                            tokenUsage:
+                              (event.step && event.step.token_usage) ||
+                              s.tokenUsage,
+                          }
+                        : s
+                    );
+                    return {
+                      ...prev,
+                      [assistantMessageId]: updated,
+                    };
+                  }
+
+                  return prev;
+                });
               }
             );
           } catch (error) {
@@ -891,12 +1541,12 @@
           setUserInput("");
           setIsTyping(true);
 
-          let currentHistoryId = historyIdRef.current;
+          let currentChatId = chatIdRef.current;
 
-          if (!currentHistoryId) {
+          if (!currentChatId) {
             try {
-              currentHistoryId = await createNewChat(input);
-              if (!currentHistoryId) {
+              currentChatId = await createNewChat(input);
+              if (!currentChatId) {
                 setIsTyping(false);
                 return;
               }
@@ -920,7 +1570,7 @@
 
           await sendMessageWithAPI(
             input,
-            currentHistoryId,
+            currentChatId,
             assistantMessageId,
             attachmentsForSend
           );
@@ -934,13 +1584,15 @@
         };
 
         const clearChat = () => {
-          historyIdRef.current = null;
+          chatIdRef.current = null;
+          setHasHistory(false);
           setMessages([]);
           setUserInput("");
           setIsTyping(false);
           setCurrentAssistantMessageId(null);
           setAttachments([]);
           setUploadError("");
+          setReasoningStepsByMessage({});
         };
 
         const handleKeyDown = (e) => {
@@ -957,9 +1609,51 @@
                 <span>💬</span>
                 <span>Codeer AI</span>
               </h1>
-              <button className="new-chat-btn" onClick={clearChat}>
-                + New Chat
-              </button>
+              <div className="header-controls">
+                <div className="agent-select-wrapper">
+                  <span className="agent-select-label">Chat</span>
+                  <select
+                    className="agent-select"
+                    value={selectedChatId}
+                    onChange={handleChatSelectChange}
+                    disabled={isTyping || isUploading || isCreatingChat}
+                  >
+                    <option value="">
+                      {isLoadingChats ? "Loading..." : "Recent chats"}
+                    </option>
+                    {recentChats.map((chat) => (
+                      <option key={chat.id} value={chat.id}>
+                        {chat.name || `Chat ${chat.id}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="agent-select-wrapper">
+                  <span className="agent-select-label">Agent</span>
+                  <select
+                    className="agent-select"
+                    value={selectedAgentId}
+                    onChange={handleAgentChange}
+                    disabled={
+                      hasHistory || isTyping || isUploading || isCreatingChat
+                    }
+                  >
+                    {!selectedAgentId && (
+                      <option value="">
+                        {isLoadingAgents ? "Loading..." : "Default"}
+                      </option>
+                    )}
+                    {agents.map((agent) => (
+                      <option key={agent.id} value={agent.id}>
+                        {agent.name || agent.id}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <button className="new-chat-btn" onClick={clearChat}>
+                  + New Chat
+                </button>
+              </div>
             </div>
 
             <div className="messages-container" ref={messagesContainerRef}>
@@ -1012,11 +1706,9 @@
                       </div>
                     ) : (
                       <div style={{ whiteSpace: "pre-wrap" }}>
-                        {message.content}
-                        {message.id === currentAssistantMessageId &&
-                          message.content !== "" && (
-                            <span className="streaming-cursor"></span>
-                          )}
+                        {message.role === "assistant"
+                          ? renderAssistantContent(message)
+                          : message.content}
                       </div>
                     )}
                     {message.attachments && message.attachments.length > 0 && (
