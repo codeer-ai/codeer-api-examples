@@ -30,7 +30,7 @@ const CODEER_DEFAULT_AGENT = "your_agent_uuid_here"; // id from /api/v1/chats/pu
 ```
 
 - Run one example:
-  - Python CLI: `pip install -r ../requirements.txt && python chat_example.py`
+  - Python CLI: `pip install requests && python chat_example.py`
   - PHP CLI: `php chat_example.php`
   - React: open `chat/react_chat.html` or serve with `python -m http.server 8080` and visit `http://localhost:8080/chat/react_chat.html`
   - Vue: open `chat/vue_chat.html` or serve with `python -m http.server 8080` and visit `http://localhost:8080/chat/vue_chat.html`
@@ -79,7 +79,7 @@ All examples call the HTTP API described below.
 ### Authentication
 
 - Send `x-api-key` in every request header.
-- Keys are workspace-scoped; you can create them in the Django admin.
+- Keys are workspace-scoped; you can create and manage them from the workspace settings page in the Codeer UI. 
 
 ---
 
@@ -125,17 +125,18 @@ You will use the `id` property as `agent_id` in later calls.
 - Headers:
   - `Content-Type: application/json`
   - `x-api-key: YOUR_API_KEY`
-- Query parameters (optional):
-  - `external_user_id`: your own identifier for the end user (e.g. `"user-123"`).
+- Query parameters: none (the `external_user_id` is sent in the JSON body).
 - Body:
   ```json
   {
     "name": "My Chat Title",
-    "agent_id": "AGENT_UUID"
+    "agent_id": "AGENT_UUID",
+    "external_user_id": "user-123"
   }
   ```
   - `name` (string, max 256, required) – chat title. If empty, the backend will fall back to a generic name like `"Untitled"` when reading.
   - `agent_id` (UUID, required) – from `/api/v1/chats/published-agents`.
+  - `external_user_id` (optional string) – your own identifier for the end user (e.g. `"user-123"`).
 - Success: `200` with JSON:
   ```json
   {
@@ -157,16 +158,16 @@ You will use the `id` property as `agent_id` in later calls.
 Example:
 
 ```bash
-curl -X POST "$CODEER_API_ROOT/api/v1/chats?external_user_id=user-123" \
+curl -X POST "$CODEER_API_ROOT/api/v1/chats" \
   -H "Content-Type: application/json" \
   -H "x-api-key: $CODEER_API_KEY" \
-  -d '{
+-d '{
     "name": "Support chat for user-123",
-    "agent_id": "b6a3d9c3-8b1e-4de3-9a3c-2f1b5f7b8a01"
+    "agent_id": "b6a3d9c3-8b1e-4de3-9a3c-2f1b5f7b8a01",
+    "external_user_id": "user-123"
   }'
 ```
 
-The returned `data.id` is the `chat_id` you will use when sending messages (this is also the `history_id` / `chat_id` field in SSE events; both are present and equal, `history_id` is kept for backward compatibility).
 The returned `data.id` is the `chat_id` you will use when sending messages (this is also the `chat_id` field in SSE events).
 
 ---
@@ -319,9 +320,11 @@ Uploads a file and returns an attachment UUID that can be referenced in chat mes
 - Content type: `multipart/form-data`
 - Fields:
   - `file` (required): the actual file upload.
-  - `scope` (optional string):
-    - `"persistent"` (default): file remains attached to the workspace/history.
-    - `"ephemeral"`: file intended for a single conversation.
+  - `data` (optional JSON string):
+    - Shape: `{"scope": "persistent" | "ephemeral"}`
+    - `scope`:
+      - `"persistent"` (default): file remains attached to the workspace/history.
+      - `"ephemeral"`: file intended for a single conversation.
 - Success: `200` with JSON:
   ```json
   {
@@ -344,7 +347,7 @@ Example:
 curl -X POST "$CODEER_API_ROOT/api/v1/chats/upload-file" \
   -H "x-api-key: $CODEER_API_KEY" \
   -F "file=@/path/to/document.pdf" \
-  -F "scope=persistent"
+  -F 'data={"scope":"persistent"}'
 ```
 
 Use the returned `uuid` value in `attached_file_uuids` when sending messages.
@@ -361,14 +364,14 @@ This is the main chat endpoint. With `"stream": true`, it returns a Server-Sent 
   - `x-api-key: YOUR_API_KEY`
 - Path parameters:
   - `chat_id` (int): from `Create Chat` response.
-- Query parameters (optional):
-  - `external_user_id`: same as in `Create Chat`.
+- Query parameters: none (the `external_user_id` is sent in the JSON body).
 - Body:
   ```json
   {
     "message": "How can I reset my password?",
     "stream": true,
     "agent_id": "AGENT_UUID",
+    "external_user_id": "user-123",
     "attached_file_uuids": [
       "c8a1e1c5-0c4b-4ac5-9e19-7f2e0ab6f3a2"
     ]
@@ -377,6 +380,7 @@ This is the main chat endpoint. With `"stream": true`, it returns a Server-Sent 
   - `message` (string, required): user input.
   - `stream` (bool, default `true`): `true` for SSE streaming.
   - `agent_id` (UUID, required): must be a published agent in the same workspace.
+  - `external_user_id` (optional string): your own identifier for the end user (e.g. `"user-123"`).
   - `attached_file_uuids` (optional array of strings): file UUIDs from `upload-file`.
 - Success (streaming):
   - `200 OK`
@@ -527,14 +531,14 @@ Use the same endpoint with `"stream": false` to get a single JSON response inste
   - `x-api-key: YOUR_API_KEY`
 - Path parameters:
   - `chat_id` (int): from `Create Chat` response.
-- Query parameters (optional):
-  - `external_user_id`: same as in `Create Chat`.
+- Query parameters: none (the `external_user_id` is sent in the JSON body).
 - Body:
   ```json
   {
     "message": "How can I reset my password?",
     "stream": false,
     "agent_id": "AGENT_UUID",
+    "external_user_id": "user-123",
     "attached_file_uuids": [
       "c8a1e1c5-0c4b-4ac5-9e19-7f2e0ab6f3a2"
     ]
