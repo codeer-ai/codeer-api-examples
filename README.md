@@ -12,8 +12,11 @@ The Codeer Chat API provides powerful conversational AI functionality with real-
 - Multiple language implementations (Python, PHP, JavaScript)
 - Simple integration with just an API key
 
-
 📖 **[View detailed documentation, usage guide, and API reference →](./chat/README.md)**
+
+## Getting Started
+
+🔑 **[How to get your API key →](./GET_APIKEY.md)**
 
 
 ## License
